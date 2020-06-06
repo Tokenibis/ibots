@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import ibots
 
 """The setup script."""
 
@@ -10,7 +11,7 @@ with open('README.rst') as readme_file:
 with open('HISTORY.rst') as history_file:
     history = history_file.read()
 
-requirements = [ ]
+requirements = ['ipython', 'flask', 'gql']
 
 setup_requirements = [ ]
 
@@ -48,6 +49,6 @@ setup(
     test_suite='tests',
     tests_require=test_requirements,
     url='https://github.com/TokenIbis/ibots',
-    version='0.1.1',
+    version=ibots.__version__,
     zip_safe=False,
 )
