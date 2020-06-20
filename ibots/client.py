@@ -1,12 +1,14 @@
+import json
 import requests
 import argparse
 
 
 def call(server, port, command, kwargs):
-    requests.post(
+    response = requests.post(
         '{}:{}/{}'.format(server, port, command),
         data=kwargs,
     )
+    print(json.dumps(response.json(), indent=2))
 
 
 if __name__ == '__main__':
@@ -53,15 +55,6 @@ if __name__ == '__main__':
         help='List of bots',
     )
 
-    parser_wipe = subparsers.add_parser('wipe')
-    parser_wipe.add_argument(
-        '-b',
-        '--bots',
-        nargs='+',
-        default=[],
-        help='List of bots',
-    )
-
     parser_resource = subparsers.add_parser('resource')
     parser_resource.add_argument(
         'targets',
@@ -91,6 +84,7 @@ if __name__ == '__main__':
     )
 
     kwargs = vars(parser.parse_args())
+
     call(
         kwargs.pop('server'),
         kwargs.pop('port'),

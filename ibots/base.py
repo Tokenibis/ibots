@@ -4,6 +4,7 @@ import IPython
 import logging
 import requests
 import operator
+import ibots.utils as utils
 
 from functools import reduce
 from abc import ABC, abstractmethod
@@ -13,7 +14,7 @@ from gql.transport.requests import RequestsHTTPTransport
 DIR = os.path.dirname(os.path.realpath(__file__))
 
 
-class TerminateBotException(Exception):
+class StopBotException(Exception):
     pass
 
 
@@ -30,7 +31,8 @@ class AbstractBot(ABC):
             self.__class__.__name__.upper()))
         self.directory = directory
         self._waiter = waiter
-        self._pause = False
+        self._stop = False
+        self._interact = False
 
         if os.path.exists(self.directory) and os.path.isfile(self.directory):
             self.logger.error('Expected a directory but found a file; exiting')
@@ -56,35 +58,55 @@ class AbstractBot(ABC):
                 url='https://{}/graphql/'.format(endpoint),
                 cookies=login_response.cookies))
 
+    def stop_hook(self):
+        pass
+
     def api_call(self, operation, variable_values=None):
-        # add some tracking for the status
-        self._client.execute(gql(operation), variable_values=variable_values)
+        return self._client.execute(
+            gql(operation),
+            variable_values=variable_values,
+        )
 
     def api_wait(self, operation=None, variables=None):
         result, event = self._waiter.wait(timeout=1)
         while not result:
+            if self._stop:
+                self.logger.info('Initiating tear-down')
+                self.stop_hook()
+                self.logger.info('Done')
+                raise StopBotException
+            if self._interact:
+                IPython.embed()
+                self._interact = False
             result, event = self._waiter.wait(event_last=event, timeout=1)
-            if self._terminate:
-                raise TerminateBotException
-
-    def query_balance(self):
-        return self.api_call(
-            gql('''query Balance {{
-                person (id: {id}) {{
-                    id
-                    balance
-            }}
-            '''))['person']['balance']
-
-    def _interact(self):
-        IPython.embed()
 
     def _status(self):
-        pass
+        # call _client directly WITHOUT going through api_call
+        try:
+            result = self._client.execute(
+                gql('''query Status {{
+                person(id: "{id}"{{
+                    id
+                    name
+                    username
+                    balance
+                }}
+            }}
+            '''.format(self.id)))
 
-    @abstractmethod
-    def start(self, **kwargs):
-        pass
+            return [
+                ('API Connection', 'connected'),
+                ('Logged in as', '{} ({})'.format(
+                    result['person']['username'],
+                    result['person']['name'],
+                )),
+                ('Balance',
+                 utils.amount_to_string(result['person']['balance'])),
+            ]
+        except Exception:
+            return [
+                ('API Connection', 'disconnected'),
+            ]
 
     @abstractmethod
     def run(self):
@@ -96,13 +118,13 @@ class AbstractBot(ABC):
 
 
 class AbstractBasicBot(AbstractBot):
-    @classmethod
+    @staticmethod
     def _user_type(node):
         if node['person']:
             return 'bot' if node['person']['isBot'] else 'human'
         return 'nonprofit'
 
-    @classmethod
+    @staticmethod
     def _entry_type(node):
         return [
             x for x in [
@@ -124,32 +146,32 @@ class AbstractBasicBot(AbstractBot):
             'bots',
             x,
         )).read()
-        for x in os.listdir()
+        for x in os.listdir(os.path.join(DIR, 'graphql', 'bots'))
     }
 
-    IDS = {
+    BID_CONF = {
         'user':
         lambda node: [
             {
-                'name': 'ibid',
+                'name': 'bid',
                 'type': AbstractBasicBot._user_type(node),
                 'location': ['id'], }, ],
         'nonprofit':
         lambda node: [
             {
-                'name': 'ibid',
+                'name': 'bid',
                 'type': 'nonprofit',
                 'location': ['ibisuserPtr', 'id'], }, ],
         'person':
         lambda node: [
             {
-                'name': 'ibid',
-                'type': 'person',
+                'name': 'bid',
+                'type': 'bot' if node['isBot'] else 'human',
                 'location': ['ibisuserPtr', 'id'], }, ],
         'donation':
         lambda node: [
             {
-                'name': 'ibid',
+                'name': 'bid',
                 'type': 'donation',
                 'location': ['id'], },
             {
@@ -157,37 +179,37 @@ class AbstractBasicBot(AbstractBot):
                 'type': AbstractBasicBot._user_type(node),
                 'location': ['user', 'id'], },
             {
-                'name': 'target_ibid',
+                'name': 'target',
                 'type': 'nonprofit',
                 'location': ['user', 'id'], }, ],
         'transaction':
         lambda node: [
             {
-                'name': 'ibid',
+                'name': 'bid',
                 'type': 'transaction',
                 'location': ['id'], },
             {
-                'name': 'user_ibid',
+                'name': 'user',
                 'type': AbstractBasicBot._user_type(node),
                 'location': ['user', 'id'], },
             {
-                'name': 'target_ibid',
+                'name': 'target',
                 'type': AbstractBasicBot._user_type(node),
                 'location': ['user', 'id'], }, ],
         'news':
         lambda node: [
             {
-                'name': 'ibid',
+                'name': 'bid',
                 'type': 'news',
                 'location': ['id'], },
             {
-                'name': 'user_ibid',
+                'name': 'user',
                 'type': 'nonprofit',
                 'location': ['user', 'id'], }, ],
         'event':
         lambda node: [
             {
-                'name': 'ibid',
+                'name': 'bid',
                 'type': 'event',
                 'location': ['id'], },
             {
@@ -197,7 +219,7 @@ class AbstractBasicBot(AbstractBot):
         'post':
         lambda node: [
             {
-                'name': 'ibid',
+                'name': 'bid',
                 'type': 'post',
                 'location': ['id'], },
             {
@@ -207,36 +229,74 @@ class AbstractBasicBot(AbstractBot):
         'comment':
         lambda node: [
             {
-                'name': 'ibid',
+                'name': 'bid',
                 'type': 'post',
                 'location': ['id'], },
             {
-                'name': 'user_ibid',
+                'name': 'user',
                 'type': AbstractBasicBot._user_type(node['user']),
                 'location': ['user', 'id'], },
             {
-                'name': 'parent_ibid',
+                'name': 'parent',
                 'type': AbstractBasicBot._entry_type(node['parent']),
                 'location': ['parent', 'id'], }, ],
     }
 
-    class Ibid:
-        def __init__(self, id, type):
-            self.id = id
-            self.type = type
-
-        def __str__(self):
-            return '{}:{}'.format(self.id, self.type)
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        if os.path.exists(os.path.join(self.directory, 'basic_state.json')):
-            with open(os.path.join(self.directory, 'basic_state.json')) as fd:
+        self.bid = self._make_bid(self.id, 'bot')
+        self._basic_store = os.path.join(
+            self.directory,
+            'basic_state_{}.json'.format(
+                utils.snake_case(self.__class__.__name__)),
+        )
+        if os.path.exists(self._basic_store):
+            with open(self._basic_store) as fd:
                 self.state = json.load(fd)
+        else:
+            self.state = {}
+            with open(self._basic_store, 'w') as fd:
+                json.dump(self.state, fd, indent=2)
+        self._state_string = json.dumps(self.state, indent=2)
+
+    def _status(self):
+        return super()._status() + [('Basic Storage Size',
+                                     os.path.getsize(self._basic_store))]
+
+    @staticmethod
+    def _make_bid(id, type):
+        return '__bid__:{}:{}'.format(id, type)
+
+    @staticmethod
+    def _is_bid(bid):
+        return type(bid) == str and len(
+            bid.split(':')) == 3 and bid.split(':')[0] == '__bid__'
+
+    @staticmethod
+    def _parse_bid(bid):
+        assert AbstractBasicBot._is_bid(bid)
+        return {
+            'id': bid.split(':')[1],
+            'type': bid.split(':')[2],
+        }
+
+    def stop_hook(self):
+        self.save_state()
 
     def save_state(self):
-        with open(self._store, 'w') as fd:
-            json.dump(self._state, fd, indent=2)
+        state_string = json.dumps(self.state)
+        if state_string != self._state_string:
+            self._state_strin = state_string
+            with open(self._basic_store, 'w') as fd:
+                fd.write(self._state_string)
+
+    def query_balance(self, **kwargs):
+        return self.api_call(
+            self.OPS['Balance'],
+            variable_values={
+                'id': self.id,
+            },
+        )['person']['id']
 
     def query_user_list(self, **kwargs):
         return self._query_list('IbisUserList', 'user', kwargs)
@@ -265,173 +325,191 @@ class AbstractBasicBot(AbstractBot):
     def query_comment_list(self, **kwargs):
         return self._query_list('CommentList', 'comment', kwargs)
 
-    def query_comment_chain(self, ibid):
-        comment = self.query_comment(ibid)
-        return (self.query_comment_chain(comment.parent_ibid)
-                if comment.parent_ibid.type == 'comment' else [
-                    getattr(self, 'query_{}'.format(comment.parent_ibid.type))(
-                        comment.parent_ibid)
+    def query_comment_chain(self, bid):
+        comment = self.query_comment(bid)
+        return (self.query_comment_chain(comment['parent'])
+                if comment['parent'].type == 'comment' else [
+                    getattr(self, 'query_{}'.format(comment['parent'].type))(
+                        comment['parent'])
                 ]) + [comment]
 
-    def query_comment_tree(self, ibid):
+    def query_comment_tree(self, bid):
         return [{
-            'comment': self.query_comment(x.ibid),
-            'replies': self.query_comment_tree(x.ibid)
-        } for x in self.query_comment_list(has_parent=ibid)]
+            'comment': self.query_comment(x.bid),
+            'replies': self.query_comment_tree(x.bid)
+        } for x in self.query_comment_list(has_parent=bid)]
 
-    def query_user(self, ibid):
-        return self._query_single('User', 'user', ibid)
+    def query_user(self, bid):
+        return self._query_single('IbisUser', 'user', bid)
 
-    def query_nonprofit(self, ibid):
-        return self._query_single('Nonprofit', 'nonprofit', ibid)
+    def query_nonprofit(self, bid):
+        return self._query_single('Nonprofit', 'nonprofit', bid)
 
-    def query_person(self, ibid):
-        return self._query_single('Person', 'person', ibid)
+    def query_person(self, bid):
+        return self._query_single('Person', 'person', bid)
 
-    def query_donation(self, ibid):
-        return self._query_single('Donation', 'donation', ibid)
+    def query_donation(self, bid):
+        return self._query_single('Donation', 'donation', bid)
 
-    def query_transaction(self, ibid):
-        return self._query_single('Transaction', 'transaction', ibid)
+    def query_transaction(self, bid):
+        return self._query_single('Transaction', 'transaction', bid)
 
-    def query_news(self, ibid):
-        return self._query_single('News', 'news', ibid)
+    def query_news(self, bid):
+        return self._query_single('News', 'news', bid)
 
-    def query_event(self, ibid):
-        return self._query_single('Event', 'event', ibid)
+    def query_event(self, bid):
+        return self._query_single('Event', 'event', bid)
 
-    def query_post(self, ibid):
-        return self._query_single('Post', 'post', ibid)
+    def query_post(self, bid):
+        return self._query_single('Post', 'post', bid)
 
-    def query_comment(self, ibid):
-        return self._query_single('Comment', 'comment', ibid)
+    def query_comment(self, bid):
+        return self._query_single('Comment', 'comment', bid)
 
     def create_post(self, title, description):
-        return self.Ibid(
-            self._api_call_named(
-                self.OPS['PostCreate'],
-                variables={
-                    'user': self.id,
-                    'title': title,
-                    'description': description,
-                },
-            )['post']['id'],
+        return self._make_bid(
+            utils.first_item(
+                self.api_call(
+                    self.OPS['PostCreate'],
+                    variable_values={
+                        'user': self._parse_bid(self.bid)['id'],
+                        'title': title,
+                        'description': description,
+                    },
+                ),
+                depth=3,
+            ),
             'post',
         )
 
     def create_donation(self, target, amount, description):
-        return self.Ibid(
-            self._api_call_named(
-                self.OPS['DonationCreate'],
-                variables={
-                    'user': self.id,
-                    'target': target.id,
-                    'amount': amount,
-                    'description': description,
-                },
-            )['donation']['id'],
+        return self._make_bid(
+            utils.first_item(
+                self.api_call(
+                    self.OPS['DonationCreate'],
+                    variable_values={
+                        'user': self._parse_bid(self.bid)['id'],
+                        'target': self._parse_bid(target)['id'],
+                        'amount': amount,
+                        'description': description,
+                    },
+                ),
+                depth=3,
+            ),
             'donation',
         )
 
     def create_transaction(self, target, amount, description):
-        return self.Ibid(
-            self._api_call_named(
-                self.OPS['TransactionCreate'],
-                variables={
-                    'user': self.id,
-                    'target': target.id,
-                    'amount': amount,
-                    'description': description,
-                },
-            )['transaction']['id'],
+        return self._make_bid(
+            utils.first_item(
+                self.api_call(
+                    self.OPS['TransactionCreate'],
+                    variable_values={
+                        'user': self._parse_bid(self.bid)['id'],
+                        'target': self._parse_bid(target)['id'],
+                        'amount': amount,
+                        'description': description,
+                    },
+                ),
+                depth=3,
+            ),
             'transaction',
         )
 
     def create_comment(self, parent, description):
-        return self.Ibid(
-            self._api_call_named(
-                self.OPS['CommentCreate'],
-                variables={
-                    'user': self.id,
-                    'parent': parent.id,
-                    'description': description,
-                },
-            )['comment']['id'],
+        return self._make_bid(
+            utils.first_item(
+                self.api_call(
+                    self.OPS['CommentCreate'],
+                    variable_values={
+                        'user': self._parse_bid(self.bid)['id'],
+                        'parent': self._parse_bid(parent)['id'],
+                        'description': description,
+                    },
+                ),
+                depth=3,
+            ),
             'comment',
         )
 
     def update_bio(self, description):
-        self._api_call_named(
+        self.api_call(
             self.OPS['BioUpdate'],
-            variables={
-                'user': self.id,
+            variable_values={
+                'user': self._parse_bid(self.bid)['id'],
                 'description': description,
             },
         )
 
     def create_like(self, target):
-        self._api_call_named(
+        self.api_call(
             self.OPS['LikeCreate'],
-            variables={
-                'user': self.id,
-                'target': target.id,
+            variable_values={
+                'user': self._parse_bid(self.bid)['id'],
+                'target': self._parse_bid(target)['id'],
             },
         )
 
     def delete_like(self, target):
-        self._api_call_named(
+        self.api_call(
             self.OPS['LikeDelete'],
-            variables={
-                'user': self.id,
-                'target': target.id,
+            variable_values={
+                'user': self._parse_bid(self.bid)['id'],
+                'target': self._parse_bid(target)['id'],
             },
         )
 
     def create_follow(self, target):
-        self._api_call_named(
+        self.api_call(
             self.OPS['FollowCreate'],
-            variables={
-                'user': self.id,
-                'target': target.id,
+            variable_values={
+                'user': self._parse_bid(self.bid)['id'],
+                'target': self._parse_bid(target)['id'],
             },
         )
 
     def delete_follow(self, target):
-        self._api_call_named(
+        self.api_call(
             self.OPS['FollowDelete'],
-            variables={
+            variable_values={
                 'user': self.id,
                 'target': target.id,
+                'user': self._parse_bid(self.bid)['id'],
+                'target': self._parse_bid(target)['id'],
             },
         )
 
-    def _clean_result(self, node, ids):
+    def _clean_result(self, node, bid_conf):
         return dict([[
             x['name'],
-            self.Ibid(
+            self._make_bid(
                 reduce(operator.getitem, x['location'], node), x['type'])
-        ] for x in ids(node)] + [
-            x for x in node.items()
-            if type(x[1]) != dict and x[0] not in [y['name'] for y in ids]
-        ])
+        ] for x in bid_conf(node)] + [[
+            utils.snake_case(k),
+            v,
+        ] for k, v in node.items() if type(v) != dict and k not in ['ids'] +
+                                      [y['name'] for y in bid_conf(node)]])
 
-    def _query_list(self, ops_key, ids_key, variables):
+    def _query_list(self, ops_key, bid_conf_key, variables):
         return [
-            self._clean_result(x['node'], ids=self.IDS[ids_key])
-            for x in self.api_call(
-                gql(self.OPS[ops_key]),
-                variables_values={
-                    ''.join(x.title() if i else x
-                            for i, x in enumerate(k.split('_'))): v.
-                    id if type(v) == AbstractBasicBot.Ibid else v
-                    for k, v in variables if v is not None
-                },
-            )['edges']
+            self._clean_result(x['node'], self.BID_CONF[bid_conf_key])
+            for x in utils.first_item(
+                self.api_call(
+                    self.OPS[ops_key],
+                    variable_values={
+                        utils.mixed_case(k): self._parse_bid(v)['id'] if self.
+                        _is_bid(v) else v
+                        for k, v in variables.items() if v is not None
+                    },
+                ))['edges']
         ]
 
-    def _query_single(self, ops_key, ids_key, ibid):
-        result = self._api_call_named(
-            gql(self.OPS[ops_key]),
-            variables_values={'id': ibid.id},
+    def _query_single(self, ops_key, bid_conf_key, bid):
+        return self._clean_result(
+            utils.first_item(
+                self.api_call(
+                    self.OPS[ops_key],
+                    variable_values={'id': self._parse_bid(bid)['id']},
+                )),
+            self.BID_CONF[bid_conf_key],
         )
-        return [x for x in result[list(result.keys())[0]] if x != 'id']

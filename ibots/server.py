@@ -8,7 +8,7 @@ import argparse
 from importlib import import_module
 from flask import Flask, request
 from threading import Thread, Lock, Event
-from base import TerminateBotException
+from ibots.base import StopBotException
 
 logger = logging.getLogger('CONTROL')
 
@@ -39,16 +39,15 @@ class Waiter:
             return False, event
 
 
-def start(port, config, directory, bots=[]):
+def start(port, config, directory, start_names=[]):
+    assert all(y in config['resources'] for x in config['bots']
+               for y in config['bots'][x]['resources'])
+
+    if not start_names:
+        start_names = set(x for x in config['bots'])
+    assert all(x in config['bots'] for x in start_names)
+
     waiter = Waiter(config['global']['endpoint'])
-
-    assert all(x in config['bots'] for x in bots)
-    if not bots:
-        bot_names = set(x for x in config['bots'])
-
-    assert all(
-        y in config['resources'] for x in bots for y in config[x]['resources'])
-    resource_names = set(y for x in bots for y in config[x]['resources'])
 
     # instantiate resources
     resources = {
@@ -58,10 +57,10 @@ def start(port, config, directory, bots=[]):
                 Lock(),
                 **config['resources'][x]['args'],
             )
-        for x in resource_names
+        for x in config['resources']
     }
 
-    # instantiate bots
+    # instantiate all bots
     bots = {
         x: getattr(
             import_module(config['bots'][x]['class'].rsplit('.', 1)[0]),
@@ -74,27 +73,28 @@ def start(port, config, directory, bots=[]):
                  for y in config['bots'][x]['resources']},
                 waiter,
             )
-        for x in bot_names
+        for x in config['bots']
     }
-
-    # start bots
-    for x in bots:
-        bots[x].start(**config['bots'][x]['args'])
 
     # run api polling
     poll_thread = Thread(target=waiter.poll, daemon=True)
     poll_thread.start()
 
-    def _run_bot(bot):
+    running = {x: False for x in bots}
+
+    def _run_bot(name, bot):
         try:
+            running[name] = True
+            logger.info('Running bot {}'.format(name))
             bot.run()
-        except TerminateBotException:
-            logger.info('Successfully stopped {}'.format(bot.username))
+        except StopBotException:
+            logger.info('Stopped bot {}'.format(name))
+        running[name] = False
 
     # run bots
     threads = {
-        x: Thread(target=_run_bot, args=(bots[x], ), daemon=True)
-        for x in bots
+        x: Thread(target=_run_bot, args=(x, bots[x]), daemon=True)
+        for x in start_names
     }
     for x in threads:
         threads[x].start()
@@ -104,44 +104,74 @@ def start(port, config, directory, bots=[]):
 
     @app.route('/status', methods=['POST'])
     def status():
-        # loop through and delete all working directories of specified bots
-        # but only if they are stopped
-        # status should include:
-        # - started/stopped
-        # - last activity
-        # - size of working directory
-        # - last 10 api calls (time, type, name, variables)
-        # - balance
-        print(dict(request.form))
+        target_set = set(
+            request.form.to_dict(flat=False)['bots'] if request.
+            form['bots'] else config['bots'])
+
+        return {
+            x: [
+                ('Status', 'Running'),
+                ('Directory Size', '5 MiB'),
+            ] + bots[x]._status()
+            for x in sorted(target_set)
+        }
 
     @app.route('/start', methods=['POST'])
     def start():
-        print(dict(request.form))
+        target_set = set(
+            request.form.to_dict(flat=False)['bots'] if request.
+            form['bots'] else [x for x in config['bots'] if not running[x]])
+        assert all(not running[x] for x in target_set)
+
+        threads = {
+            x: Thread(target=_run_bot, args=(x, bots[x]), daemon=True)
+            for x in target_set
+        }
+
+        for x in threads:
+            threads[x].start()
+
+        return 'Done'
 
     @app.route('/stop', methods=['POST'])
     def stop():
-        print(dict(request.form))
+        target_set = set(
+            request.form.to_dict(flat=False)['bots'] if request.
+            form['bots'] else [x for x in config['bots'] if running[x]])
+        assert all(running[x] for x in target_set)
 
-    @app.route('/wipe', methods=['POST'])
-    def wipe():
-        # loop through and delete all working directories of specified bots
-        # but only if they are stopped
-        print(dict(request.form))
+        for x in target_set:
+            x._stop = True
+
+        while target_set:
+            stopped = set()
+            for x in target_set:
+                if not running[x]:
+                    stopped.add(x)
+                target_set.difference_update(stopped)
+
+        return 'Done'
 
     @app.route('/resource', methods=['POST'])
     def resource():
-        for x in request.form.targets:
-            resources[x].command(request.form.instruction)
+        assert all(x in resources for x in request.form['targets'])
+        return {
+            x: resources[x].command(request.form['instruction'])
+            for x in request.form['targets']
+        }
 
     @app.route('/bot', methods=['POST'])
     def bot():
-        for x in request.form.targets:
-            bots[x].command(request.form.instruction)
+        assert all(running[x] for x in request.form['targets'])
+        return {
+            x: bots[x].command(request.form['instruction'])
+            for x in request.form['targets']
+        }
 
     @app.route('/interact', methods=['POST'])
     def interact():
-        interact_thread = Thread(bots[x]._interact)
-        interact_thread.start()
+        bots[request.form['target']]._interact = True
+        return 'Done'
 
     app.run(port=port)
 
@@ -169,7 +199,7 @@ if __name__ == '__main__':
         '-d',
         '--directory',
         help='Working directory',
-        default=os.path.join(os.get_cwd(), 'ibots_store'),
+        default=os.path.join(os.getcwd(), 'ibots_store'),
     )
 
     args = parser.parse_args()
