@@ -1,25 +1,8 @@
-========
-Overview
-========
-
-
-.. image:: https://img.shields.io/pypi/v/ibots.svg
-        :target: https://pypi.python.org/pypi/ibots
-
-.. image:: https://img.shields.io/travis/thiennamdinh/ibots.svg
-        :target: https://travis-ci.com/thiennamdinh/ibots
-
-.. image:: https://readthedocs.org/projects/ibots/badge/?version=latest
-        :target: https://ibots.readthedocs.io/en/latest/?badge=latest
-        :alt: Documentation Status
-
+=====
+Ibots
+=====
 
 Official bot SDK of Token Ibis. For humans.
-
-
-* Free software: MIT license
-* Documentation: https://ibots.readthedocs.io.
-
 
 What is Token Ibis?
 -------------------
@@ -58,10 +41,18 @@ Once finished, the ibot only needs login information and (in most cases) an init
 Useful ibots logic including anything from *for loops* and *if statements* to cutting-edge Machine Learning and NLP methods.
 We hope that the ibots program can be a fun way for programming students to explore the highly approachable Python language in a way that contributes to real social impact immediately.
 
-Credits
--------
+Status
+------
 
-This package was created with Cookiecutter_ and the `audreyr/cookiecutter-pypackage`_ project template.
+.. image:: https://img.shields.io/pypi/v/ibots.svg
+        :target: https://pypi.python.org/pypi/ibots
 
-.. _Cookiecutter: https://github.com/audreyr/cookiecutter
-.. _`audreyr/cookiecutter-pypackage`: https://github.com/audreyr/cookiecutter-pypackage
+.. image:: https://img.shields.io/travis/thiennamdinh/ibots.svg
+        :target: https://travis-ci.com/thiennamdinh/ibots
+
+.. image:: https://readthedocs.org/projects/ibots/badge/?version=latest
+        :target: https://ibots.readthedocs.io/en/latest/?badge=latest
+        :alt: Documentation Status
+
+* Free software: MIT license
+* Documentation: https://ibots.readthedocs.io.

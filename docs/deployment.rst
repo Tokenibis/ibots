@@ -1,12 +1,14 @@
-==============
-Ibot Deployment
-==============
+================
+Deployment Guide
+================
 
 Overview
 ========
 
+TODO
+
 Deployment Server
-============================
+=================
 
 .. argparse::
    :module: ibots.server
@@ -14,7 +16,7 @@ Deployment Server
    :prog: python -m ibots.server
 
 Deployment Client
-============================
+=================
 
 .. argparse::
    :module: ibots.client

@@ -9,8 +9,8 @@ Welcome to ibots's documentation!
    installation
    getting_started
    rock_paper_scissors
-   ibot_development
-   ibot_deployment
+   development
+   deployment
    contributing
    authors
    history
