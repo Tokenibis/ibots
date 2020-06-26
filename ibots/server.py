@@ -176,33 +176,43 @@ def start(port, config, directory, start_names=[]):
     app.run(port=port)
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
+def get_parser():
+    parser = argparse.ArgumentParser(description='''
+        This server runs the bot deployment platform. The server executes
+        bot logic in parallel threads and handles interactions with
+        the remote Token Ibis endpoint. It can be controlled by
+        accessing ``http://localhost:port`` with ibots.client from a
+        different terminal.''')
+
     parser.add_argument(
         'config',
-        help='Configuration file',
+        help='JSON configuration file for the deployment',
     )
     parser.add_argument(
         '-p',
         '--port',
-        help='Port number',
+        help='Port number at which this server can be accesse by the client',
         default=8000,
+    )
+    parser.add_argument(
+        '-d',
+        '--directory',
+        help='Working directory store persistent state for each bot instance',
+        default=os.path.join(os.getcwd(), 'ibots_store'),
     )
     parser.add_argument(
         '-b',
         '--bots',
         nargs='+',
         default=[],
-        help='List of bots',
-    )
-    parser.add_argument(
-        '-d',
-        '--directory',
-        help='Working directory',
-        default=os.path.join(os.getcwd(), 'ibots_store'),
+        help='List of bots to start. If empty, start all configured bots',
     )
 
-    args = parser.parse_args()
+    return parser
+
+
+if __name__ == '__main__':
+    args = get_parser().parse_args()
 
     with open(args.config) as fd:
         config = json.load(fd)

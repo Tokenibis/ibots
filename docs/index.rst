@@ -7,8 +7,10 @@ Welcome to ibots's documentation!
 
    readme
    installation
-   usage
-   modules
+   getting_started
+   rock_paper_scissors
+   ibot_development
+   ibot_deployment
    contributing
    authors
    history

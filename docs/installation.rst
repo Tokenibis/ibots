@@ -32,13 +32,13 @@ You can either clone the public repository:
 
 .. code-block:: console
 
-    $ git clone git://github.com/thiennamdinh/ibots
+    $ git clone git://github.com/TokenIbis/ibots
 
 Or download the `tarball`_:
 
 .. code-block:: console
 
-    $ curl -OJL https://github.com/thiennamdinh/ibots/tarball/master
+    $ curl -OJL https://github.com/TokenIbis/ibots/tarball/master
 
 Once you have a copy of the source, you can install it with:
 

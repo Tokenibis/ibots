@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-import ibots
 
 """The setup script."""
 
@@ -49,6 +48,6 @@ setup(
     test_suite='tests',
     tests_require=test_requirements,
     url='https://github.com/TokenIbis/ibots',
-    version=ibots.__version__,
+    version='0.1.4',
     zip_safe=False,
 )
