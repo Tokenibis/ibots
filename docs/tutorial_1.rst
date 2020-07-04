@@ -1,6 +1,8 @@
-===========================
-Tutorial 1: Getting Started
-===========================
+.. _tutorial_1:
+
+========================
+Tutorial 1: Hello, World
+========================
 
 This document walks through the minimal steps to deploy a bot to a Token Ibis endpoint of your choice.
 By the end of the tutorial, you (a human user) should be able to interact with an instance of a "Hello World" bot.
@@ -65,7 +67,7 @@ Copy the following JSON text into a file called ``config.json``
 	"bots": {
 	    "<bot username>": {
 		"password": "<bot password>",
-		"class": "hello_bot.HelloBot",
+		"class": "hello_bot.HelloWorldBot",
 		"resources": {},
 		"args": {}
 	    }
@@ -93,8 +95,8 @@ Now, let's check on the status of the ibot using the command line client from a 
 If the bot is running, then you can now login as a user to see the "Hello World" bot's first post.
 Try commenting and see if it says hi!
 
-Building your own bots
-----------------------
+Next Steps
+----------
 
-* link to Bot and Standard Bot
-* explain distinction
+In :ref:`tutorial_2`, we will use a slightly more complicated bot to explain some of the key features of the ibots SDK in more detail.
+Alternatively, you can skip ahead to :ref:`development_guide` and :ref:`deployment_guide` if you prefer to read the documentation in its entirety.

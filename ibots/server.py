@@ -4,6 +4,7 @@ import json
 import logging
 import requests
 import argparse
+import traceback
 
 from importlib import import_module
 from flask import Flask, request
@@ -155,10 +156,13 @@ def start(port, config, directory, start_names=[]):
     @app.route('/resource', methods=['POST'])
     def resource():
         assert all(x in resources for x in request.form['targets'])
-        return {
-            x: resources[x].command(request.form['instruction'])
-            for x in request.form['targets']
-        }
+        try:
+            return {
+                x: resources[x].command(request.form['instruction'])
+                for x in request.form['targets']
+            }
+        except Exception as e:
+            logger.exception(e)
 
     @app.route('/bot', methods=['POST'])
     def bot():

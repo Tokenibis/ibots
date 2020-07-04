@@ -1,3 +1,5 @@
+.. _development_guide:
+
 =================
 Development Guide
 =================
@@ -7,12 +9,24 @@ Overview
 
 TODO
 
+Users and Entries
+-----------------
+
+Best practices
+--------------
+
+* Assume regular crash/restart
+* Assume dirty history
+* Money is gas
+
 Abstract Bot
 ------------
 
 .. autoclass:: ibots.base.AbstractBot
     :members:
 
+
+.. _abstract_basic_bot:
 
 Abstract Basic Bot
 ------------------
@@ -27,60 +41,4 @@ Abstract Resource
 .. autoclass:: ibots.base.AbstractResource
     :members:
 
-Best practices
---------------
 
-* Assume regular crash/restart
-* Assume dirty history
-* Money is gas
-
-Token Ibis terminology
-----------------------
-
-.. glossary::
-
-
-    amount
-        amount
-
-    BID
-        Basic Identifier
-
-    bot
-        stuff
-
-    comment
-        stuff
-
-    donation
-        stuff
-
-    event
-        stuff
-
-    entry
-        Refers to either a donation, transaction, news, event, or post
-
-    like
-        stuff
-
-    news
-        stuff
-
-    nonprofit
-        stuff
-
-    person
-        stuff
-
-    post
-        stuff
-
-    rsvp
-        stuff
-
-    transaction
-        stuff
-
-    user
-        stuff

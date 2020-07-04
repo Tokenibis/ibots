@@ -7,10 +7,11 @@ Welcome to ibots's documentation!
 
    readme
    installation
-   getting_started
-   rock_paper_scissors
+   tutorial_1
+   tutorial_2
    development
    deployment
+   glossary
    contributing
    authors
    history

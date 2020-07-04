@@ -1,7 +1,7 @@
 from ibots.base import AbstractBasicBot
 
 
-class HelloBot(AbstractBasicBot):
+class HelloWorldBot(AbstractBasicBot):
     def run(self):
         # check to see if I've already posted before
         posts = self.query_post_list(by_user=self.bid)

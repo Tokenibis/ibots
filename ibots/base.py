@@ -31,7 +31,7 @@ class AbstractBot(ABC):
     :ivar logger: (:class:`logging.Logger`) -- ibot-specific logger
     :ivar <resources>: (:class:`ibots.base.AbstractResource`) --
        resources specified in the config will get added as an
-       attribute with the same name as the "key" string
+       attribute with the same name as the "key" value in the config
 
     """
 
