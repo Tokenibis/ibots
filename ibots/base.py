@@ -104,7 +104,7 @@ class AbstractBot(ABC):
         :type timeout: int, optional
 
         """
-        start = time.now()
+        start = time.time()
         result, event = self._waiter.wait(timeout=1)
         while not result and (not timeout or time.now() - start < timeout):
             if self._stop:
