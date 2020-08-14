@@ -1,5 +1,9 @@
 import re
 
+from dateutil import parser
+from datetime import datetime
+from pytz import timezone
+
 
 def amount_to_string(x):
     return '${:.2f}'.format(x / 100)
@@ -16,3 +20,11 @@ def mixed_case(x):
 def first_item(x, depth=1):
     return x[sorted(x.keys())[0]] if depth == 1 else first_item(x[sorted(
         x.keys())[0]])
+
+
+def localtime(initial=None):
+    if type(initial) == str:
+        return parser.parse(initial).astimezone(timezone('MST'))
+    elif type(initial) == datetime:
+        return datetime.astimezone(timezone('MST'))
+    return datetime.now(timezone('MST'))

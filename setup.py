@@ -32,11 +32,6 @@ setup(
         'Programming Language :: Python :: 3.8',
     ],
     description="Token Ibis bot platform SDK",
-    entry_points={
-        'console_scripts': [
-            'ibots=ibots.cli:main',
-        ],
-    },
     install_requires=requirements,
     license="MIT license",
     long_description=readme + '\n\n' + history,

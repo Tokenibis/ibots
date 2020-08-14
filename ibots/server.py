@@ -1,21 +1,20 @@
-import os
+import sys
 import time
 import json
 import logging
 import requests
 import argparse
-import traceback
 
 from importlib import import_module
 from flask import Flask, request
-from threading import Thread, Lock, Event
+from threading import Thread, Event
 from ibots.base import StopBotException
 
 logger = logging.getLogger('CONTROL')
 
 
 class Waiter:
-    def __init__(self, endpoint, period=10):
+    def __init__(self, endpoint, period=4):
         self._endpoint = endpoint
         self._period = period
 
@@ -23,6 +22,7 @@ class Waiter:
         self._event = Event()
         latest = ''
         while True:
+            logger.debug('Polling')
             response = requests.get('https://{}/tracker/wait/'.format(
                 self._endpoint))
             if response.text != latest:
@@ -40,41 +40,35 @@ class Waiter:
             return False, event
 
 
-def start(port, config, directory, start_names=[]):
-    assert all(y in config['resources'] for x in config['bots']
-               for y in config['bots'][x]['resources'])
+def start(port, level, std, endpoint, config, start_names=[]):
+    if std:
+        logging.basicConfig(
+            stream=sys.stdout,
+            level=logging._nameToLevel[level],
+        )
+    else:
+        logging.basicConfig(
+            filename='ibots.log',
+            level=logging._nameToLevel[level],
+        )
 
     if not start_names:
-        start_names = set(x for x in config['bots'])
-    assert all(x in config['bots'] for x in start_names)
+        start_names = set(x for x in config)
+    assert all(x in config for x in start_names)
 
-    waiter = Waiter(config['global']['endpoint'])
-
-    # instantiate resources
-    resources = {
-        x: getattr(
-            import_module(config['resources'][x]['class'].rsplit('.', 1)[0]),
-            config['resources'][x]['class'].rsplit('.', 1)[1])(
-                Lock(),
-                **config['resources'][x]['args'],
-            )
-        for x in config['resources']
-    }
+    waiter = Waiter(endpoint)
 
     # instantiate all bots
     bots = {
         x: getattr(
-            import_module(config['bots'][x]['class'].rsplit('.', 1)[0]),
-            config['bots'][x]['class'].rsplit('.', 1)[1])(
-                config['global']['endpoint'],
-                os.path.join(directory, x),
+            import_module(config[x]['class'].rsplit('.', 1)[0]),
+            config[x]['class'].rsplit('.', 1)[1])(
+                endpoint,
                 x,
-                config['bots'][x]['password'],
-                {y: resources[y]
-                 for y in config['bots'][x]['resources']},
+                config[x]['password'],
                 waiter,
             )
-        for x in config['bots']
+        for x in config
     }
 
     # run api polling
@@ -103,6 +97,29 @@ def start(port, config, directory, start_names=[]):
     # start server
     app = Flask(__name__)
 
+    @app.route('/', methods=['GET', 'POST'])
+    def dash():
+        return '''
+<!DOCTYPE html>
+<html>
+<body>
+
+<h1>The input checked attribute</h1>
+
+<form action="/action_page.php" method="get">
+  <input type="checkbox" name="vehicle1" value="Bike">
+  <label for="vehicle1"> I have a bike</label><br>
+  <input type="checkbox" name="vehicle2" value="Car">
+  <label for="vehicle2"> I have a car</label><br>
+  <input type="checkbox" name="vehicle3" value="Boat" checked>
+  <label for="vehicle3"> I have a boat</label><br><br>
+  <input type="submit" value="Submit">
+</form>
+
+</body>
+</html>
+        '''
+
     @app.route('/status', methods=['POST'])
     def status():
         target_set = set(
@@ -112,7 +129,6 @@ def start(port, config, directory, start_names=[]):
         return {
             x: [
                 ('Status', 'Running'),
-                ('Directory Size', '5 MiB'),
             ] + bots[x]._status()
             for x in sorted(target_set)
         }
@@ -153,25 +169,6 @@ def start(port, config, directory, start_names=[]):
 
         return 'Done'
 
-    @app.route('/resource', methods=['POST'])
-    def resource():
-        assert all(x in resources for x in request.form['targets'])
-        try:
-            return {
-                x: resources[x].command(request.form['instruction'])
-                for x in request.form['targets']
-            }
-        except Exception as e:
-            logger.exception(e)
-
-    @app.route('/bot', methods=['POST'])
-    def bot():
-        assert all(running[x] for x in request.form['targets'])
-        return {
-            x: bots[x].command(request.form['instruction'])
-            for x in request.form['targets']
-        }
-
     @app.route('/interact', methods=['POST'])
     def interact():
         bots[request.form['target']]._interact = True
@@ -193,16 +190,26 @@ def get_parser():
         help='JSON configuration file for the deployment',
     )
     parser.add_argument(
+        'endpoint',
+        help='Connection endpoint',
+    )
+    parser.add_argument(
         '-p',
         '--port',
         help='Port number at which this server can be accesse by the client',
         default=8000,
     )
     parser.add_argument(
-        '-d',
-        '--directory',
-        help='Working directory store persistent state for each bot instance',
-        default=os.path.join(os.getcwd(), 'ibots_store'),
+        '-s',
+        '--std',
+        help='Log to stdout',
+        action='store_true',
+    )
+    parser.add_argument(
+        '-l',
+        '--level',
+        help='Set log level ({})'.format('|'.join(logging._nameToLevel)),
+        default='info',
     )
     parser.add_argument(
         '-b',
@@ -215,10 +222,17 @@ def get_parser():
     return parser
 
 
-if __name__ == '__main__':
+def main():
     args = get_parser().parse_args()
 
     with open(args.config) as fd:
         config = json.load(fd)
 
-    start(args.port, config, args.directory, args.bots)
+    start(
+        args.port,
+        args.level,
+        args.std,
+        args.endpoint,
+        config,
+        args.bots,
+    )

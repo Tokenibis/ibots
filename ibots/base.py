@@ -1,59 +1,49 @@
 import os
-import time
-import json
 import IPython
 import logging
 import requests
-import operator
 import ibots.utils as utils
 
-from functools import reduce
 from abc import ABC, abstractmethod
 from gql import gql, Client
 from gql.transport.requests import RequestsHTTPTransport
 
 DIR = os.path.dirname(os.path.realpath(__file__))
 
+OPS = {
+    utils.snake_case(x.rsplit('.', 1)[0]): open(
+        os.path.join(
+            DIR,
+            'graphql',
+            'bot',
+            x,
+        )).read()
+    for x in os.listdir(os.path.join(DIR, 'graphql', 'bot'))
+}
+
 
 class StopBotException(Exception):
     pass
-
-
-class AbstractResource(ABC):
-    @abstractmethod
-    def command(self, instruction):
-        pass
 
 
 class AbstractBot(ABC):
     """Say something about the fact that it uses
 
     :ivar logger: (:class:`logging.Logger`) -- ibot-specific logger
-    :ivar <resources>: (:class:`ibots.base.AbstractResource`) --
-       resources specified in the config will get added as an
-       attribute with the same name as the "key" value in the config
 
     """
 
-    def __init__(self, endpoint, directory, username, password, resources,
-                 waiter):
+    def __init__(self, endpoint, username, password, waiter):
 
         self.logger = logging.getLogger('BOT_{}'.format(
             self.__class__.__name__.upper()))
-        self._directory = directory
+        self._endpoint = endpoint
         self._waiter = waiter
         self._stop = False
         self._interact = False
 
-        if os.path.exists(self._directory) and os.path.isfile(self._directory):
-            self.logger.error('Expected a directory but found a file; exiting')
-        os.makedirs(self._directory, exist_ok=True)
-
-        for key, value in resources.items():
-            setattr(self, key, value)
-
         login_response = requests.post(
-            'https://{}//ibis/login-pass/'.format(endpoint),
+            'https://{}/ibis/login-pass/'.format(self._endpoint),
             data={
                 'username': username,
                 'password': password
@@ -66,15 +56,8 @@ class AbstractBot(ABC):
 
         self._client = Client(
             transport=RequestsHTTPTransport(
-                url='https://{}/graphql/'.format(endpoint),
+                url='https://{}/graphql/'.format(self._endpoint),
                 cookies=login_response.cookies))
-
-    def stop_hook(self):
-        """Override this hook to execute any code that runs just before the
-        controller safely stops a bot.
-
-        """
-        pass
 
     def api_call(self, operation, variables=None):
         """Execute the gql query and variables on the remote endpoint.
@@ -95,27 +78,58 @@ class AbstractBot(ABC):
             variable_values=variables,
         )
 
-    def api_wait(self, timeout=None):
-        """Wait until anything useful at all happens at the remote endpoint.
+    def api_wait(self, timeout=None, exit_any=False):
+        """Wait until something happens at the remote endpoint.
         While waiting, the controller may interrupt to safely stop or
         interact with the bot.
 
         :param timeout: Number of seconds to timeout if nothing happens
         :type timeout: int, optional
 
+        :param mine: Only wait for my notifications
+        :type mine: bool, optional
+
         """
-        start = time.time()
+        start = utils.localtime()
         result, event = self._waiter.wait(timeout=1)
-        while not result and (not timeout or time.now() - start < timeout):
+
+        while not result:
+            # received signal from server to stop the bot
             if self._stop:
-                self.logger.info('Initiating tear-down')
-                self.stop_hook()
-                self.logger.info('Done')
                 raise StopBotException
+            # received signal from server to enter interactive mode
             if self._interact:
                 IPython.embed()
                 self._interact = False
+
             result, event = self._waiter.wait(event_last=event, timeout=1)
+
+            # break because *something* happened and exit_any=True
+            if result and exit_any:
+                break
+
+            # break because our bot got a notification
+            if result and self.api_call(
+                    OPS['__notifier'],
+                    variables={'id': self.id},
+            )['notifier']['unseenCount']:
+                self.logger.debug('Got an update')
+                print(self.api_call(
+                    OPS['__notifier_update'],
+                    variables={
+                        'id': self.id,
+                        'lastSeen': str(utils.localtime()),
+                    },
+                ))
+                break
+
+            # break breaks of timeout
+            if timeout and utils.localtime() - start < timeout:
+                break
+
+            result = False
+            event = None
+        print('out here now')
 
     def _status(self):
         """Calculate and return the status of the bot. This method should only
@@ -129,12 +143,12 @@ class AbstractBot(ABC):
         try:
             result = self._client.execute(
                 gql('''query Status {{
-                person(id: "{id}"{{
-                    id
-                    name
+                    person(id: "{id}"{{
+                        id
+                        name
+                    }}
                 }}
-            }}
-            '''.format(self.id)))
+            '''.format(id=self.id)))
             return [
                 ('API Connection', 'connected'),
                 ('Logged in as', '{} ({})'.format(
@@ -153,227 +167,66 @@ class AbstractBot(ABC):
     def run(self):
         pass
 
-    @abstractmethod
-    def command(self, instruction):
-        pass
-
 
 class AbstractBasicBot(AbstractBot):
     """Say something about the fact that it uses
 
-    :ivar bid: :term:`BID` of the bot
-    :ivar state: Persistent state of the bot
-
     """
 
-    @staticmethod
-    def _user_type(node):
-        if node['person']:
-            return 'bot' if node['person']['isBot'] else 'human'
-        return 'nonprofit'
-
-    @staticmethod
-    def _entry_type(node):
-        return [
-            x for x in [
-                'donation',
-                'transaction',
-                'news',
-                'event',
-                'post',
-                'comment',
-            ] if node[x]
-        ][0]
-
-    COUNT = 25
-
-    OPS = {
-        x.rsplit('.', 1)[0]: open(os.path.join(
-            DIR,
-            'graphql',
-            'bots',
-            x,
-        )).read()
-        for x in os.listdir(os.path.join(DIR, 'graphql', 'bots'))
-    }
-
-    BID_CONF = {
-        'user':
-        lambda node: [
-            {
-                'name': 'bid',
-                'type': AbstractBasicBot._user_type(node),
-                'location': ['id'], }, ],
-        'nonprofit':
-        lambda node: [
-            {
-                'name': 'bid',
-                'type': 'nonprofit',
-                'location': ['ibisuserPtr', 'id'], }, ],
-        'person':
-        lambda node: [
-            {
-                'name': 'bid',
-                'type': 'bot' if node['isBot'] else 'human',
-                'location': ['ibisuserPtr', 'id'], }, ],
-        'donation':
-        lambda node: [
-            {
-                'name': 'bid',
-                'type': 'donation',
-                'location': ['id'], },
-            {
-                'name': 'user',
-                'type': AbstractBasicBot._user_type(node),
-                'location': ['user', 'id'], },
-            {
-                'name': 'target',
-                'type': 'nonprofit',
-                'location': ['user', 'id'], }, ],
-        'transaction':
-        lambda node: [
-            {
-                'name': 'bid',
-                'type': 'transaction',
-                'location': ['id'], },
-            {
-                'name': 'user',
-                'type': AbstractBasicBot._user_type(node),
-                'location': ['user', 'id'], },
-            {
-                'name': 'target',
-                'type': AbstractBasicBot._user_type(node),
-                'location': ['user', 'id'], }, ],
-        'news':
-        lambda node: [
-            {
-                'name': 'bid',
-                'type': 'news',
-                'location': ['id'], },
-            {
-                'name': 'user',
-                'type': 'nonprofit',
-                'location': ['user', 'id'], }, ],
-        'event':
-        lambda node: [
-            {
-                'name': 'bid',
-                'type': 'event',
-                'location': ['id'], },
-            {
-                'name': 'user',
-                'type': 'nonprofit',
-                'location': ['user', 'id'], }, ],
-        'post':
-        lambda node: [
-            {
-                'name': 'bid',
-                'type': 'post',
-                'location': ['id'], },
-            {
-                'name': 'user',
-                'type': AbstractBasicBot._user_type(node['user']),
-                'location': ['user', 'id'], }, ],
-        'comment':
-        lambda node: [
-            {
-                'name': 'bid',
-                'type': 'post',
-                'location': ['id'], },
-            {
-                'name': 'user',
-                'type': AbstractBasicBot._user_type(node['user']),
-                'location': ['user', 'id'], },
-            {
-                'name': 'parent',
-                'type': AbstractBasicBot._entry_type(node['parent']),
-                'location': ['parent', 'id'], }, ],
-    }
+    FIRST = 25
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.bid = self._make_bid(self.id, 'bot')
-        self._basic_store = os.path.join(
-            self._directory,
-            'basic_state_{}.json'.format(
-                utils.snake_case(self.__class__.__name__)),
-        )
-        if os.path.exists(self._basic_store):
-            with open(self._basic_store) as fd:
-                self.state = json.load(fd)
-        else:
-            self.state = {}
-            with open(self._basic_store, 'w') as fd:
-                json.dump(self.state, fd, indent=2)
-        self._state_string = json.dumps(self.state, indent=2)
 
-    def _status(self):
-        return super()._status() + [('Basic Storage Size',
-                                     os.path.getsize(self._basic_store))]
+        info = self.bot_node(id=self.id)
+        self.username = info['username']
+        self.name = info['name']
 
-    @staticmethod
-    def _make_bid(id, type):
-        return '__bid__:{}:{}'.format(id, type)
+    def load_gql(func):
+        def wrapper(*args, **kwargs):
+            def empty():
+                """Docstring"""
+                pass
 
-    @staticmethod
-    def _is_bid(bid):
-        return type(bid) == str and len(
-            bid.split(':')) == 3 and bid.split(':')[0] == '__bid__'
+            assert func.__code__.co_code == empty.__code__.co_code
 
-    @staticmethod
-    def _parse_bid(bid):
-        assert AbstractBasicBot._is_bid(bid)
-        return {
-            'id': bid.split(':')[1],
-            'type': bid.split(':')[2],
-        }
+            args[0].logger.debug('Calling {} ({})'.format(
+                func.__name__,
+                kwargs,
+            ))
 
-    def save_state(self):
-        """Write the current state of :attr:`state` to disk if it has changed
-        since the last call to :func:`save_state`.
+            # add assertions to make sure functions are properly documented
 
-        """
+            kwargs = {utils.mixed_case(x): kwargs[x] for x in kwargs}
 
-        state_string = json.dumps(self.state)
-        if state_string != self._state_string:
-            self._state_strin = state_string
-            with open(self._basic_store, 'w') as fd:
-                fd.write(self._state_string)
+            return AbstractBasicBot._collapse_connections(
+                getattr(
+                    AbstractBasicBot,
+                    '_' + func.__name__.split('_')[-1],
+                )(*args, OPS[func.__name__], **kwargs))
 
-    def query_balance(self):
-        """The bot's current balance.
+        return wrapper
 
-        :return: Current balance denominated in cents
-        :rtype: int
+    @load_gql
+    def organizaton_list(self, **kwargs):
+        """Retrieve a list of recently joined organizations.
 
-        """
-
-        return self.api_call(
-            self.OPS['Balance'],
-            variables={
-                'id': self.id,
-            },
-        )['person']['balance']
-
-    def query_user_list(self, **kwargs):
-        """Retrieve a list of recently joined users.
-
-        :param search: Query only users whose username or full name
+        :param search: Query only organizations whose username or full name
            contains this substring
         :type search: str, optional
 
-        :param followed_by: Query only users who are followed by this
+        :param followed_by: Query only organizations who are followed by this
             user
-        :type followed_by: :term:`BID`, optional
+        :type followed_by: :term:`ID`, optional
 
-        :param followed_of: Query only users who follow this user
-        :type followed_of: :term:`BID`, optional
+        :param followed_of: Query only organizations who follow this user
+        :type followed_of: :term:`ID`, optional
 
-        :param like_for: Query only users who liked this entry
-        :type like_for: :term:`BID`, optional
+        :param like_for: Query only organizations who liked this entry
+        :type like_for: :term:`ID`, optional
 
-        :param rsvp_for: Query only users who rsvp'd for this event
-        :type rsvp_for: :term:`BID`, optional
+        :param rsvp_for: Query only organizations who rsvp'd for this event
+        :type rsvp_for: :term:`ID`, optional
 
         :param order_by: Specify query order; see schema at
             ``https://<endpoint>/graphql`` for all options.
@@ -382,57 +235,16 @@ class AbstractBasicBot(AbstractBot):
         :return: List of dictionaries each with the following
             key/value pairs:
 
-            * :attr:`bid` (:term:`BID`) -- handler for the user
-            * :attr:`username` (*str*) -- user's on-app username
-            * :attr:`short_name` (*str*) -- either the first name alone if
-              available OR the last name alone (this is typically the
-              best way to refer to a user since nonprofits don't have
-              first names)
-            * :attr:`full_name` (*str*) -- user's full name
-            * :attr:`first_name` (*str*) -- user's first name
-            * :attr:`last_name` (*str*) -- user's last name
-
-        """
-        return self._query_list('IbisUserList', 'user', kwargs)
-
-    def query_nonprofit_list(self, **kwargs):
-        """Retrieve a list of recently joined nonprofits.
-
-        :param search: Query only nonprofits whose username or full name
-           contains this substring
-        :type search: str, optional
-
-        :param followed_by: Query only nonprofits who are followed by this
-            user
-        :type followed_by: :term:`BID`, optional
-
-        :param followed_of: Query only nonprofits who follow this user
-        :type followed_of: :term:`BID`, optional
-
-        :param like_for: Query only nonprofits who liked this entry
-        :type like_for: :term:`BID`, optional
-
-        :param rsvp_for: Query only nonprofits who rsvp'd for this event
-        :type rsvp_for: :term:`BID`, optional
-
-        :param order_by: Specify query order; see schema at
-            ``https://<endpoint>/graphql`` for all options.
-        :type order_by: str, optional
-
-        :return: List of dictionaries each with the following
-            key/value pairs:
-
-            * :attr:`bid` (:term:`BID`) -- handler for the nonprofit
-            * :attr:`username` (*str*) -- nonprofit's on-app username
-            * :attr:`short_name` (*str*) -- nonprofit name
-            * :attr:`full_name` (*str*) -- nonprofit name
+            * :attr:`id` (:term:`ID`) -- handler for the organization
+            * :attr:`username` (*str*) -- organization's on-app username
+            * :attr:`full_name` (*str*) -- organization name
             * :attr:`first_name` (*str*) -- blank (included for consistency)
-            * :attr:`last_name` (*str*) -- nonprofit name
 
         """
-        return self._query_list('NonprofitList', 'nonprofit', kwargs)
+        pass
 
-    def query_person_list(self, **kwargs):
+    @load_gql
+    def person_list(self, **kwargs):
         """Retrieve a list of recently joined people.
 
         :param search: Query only people whose username or full name
@@ -441,16 +253,16 @@ class AbstractBasicBot(AbstractBot):
 
         :param followed_by: Query only people who are followed by this
             user
-        :type followed_by: :term:`BID`, optional
+        :type followed_by: :term:`ID`, optional
 
         :param followed_of: Query only people who follow this user
-        :type followed_of: :term:`BID`, optional
+        :type followed_of: :term:`ID`, optional
 
         :param like_for: Query only people who liked this entry
-        :type like_for: :term:`BID`, optional
+        :type like_for: :term:`ID`, optional
 
         :param rsvp_for: Query only people who rsvp'd for this event
-        :type rsvp_for: :term:`BID`, optional
+        :type rsvp_for: :term:`ID`, optional
 
         :param order_by: Specify query order; see schema at
             ``https://<endpoint>/graphql`` for all options.
@@ -459,17 +271,52 @@ class AbstractBasicBot(AbstractBot):
         :return: List of dictionaries each with the following
             key/value pairs:
 
-            * :attr:`bid` (:term:`BID`) -- handler for the person
+            * :attr:`id` (:term:`ID`) -- handler for the person
             * :attr:`username` (*str*) -- person's on-app username
-            * :attr:`short_name` (*str*) -- person's first name
             * :attr:`full_name` (*str*) -- person's full name
             * :attr:`first_name` (*str*) -- person's first name
-            * :attr:`last_name` (*str*) -- person's last name
 
         """
-        return self._query_list('PersonList', 'person', kwargs)
+        pass
 
-    def query_donation_list(self, **kwargs):
+    @load_gql
+    def bot_list(self, **kwargs):
+        """Retrieve a list of recently joined bots.
+
+        :param search: Query only bots whose username or full name
+           contains this substring
+        :type search: str, optional
+
+        :param followed_by: Query only bots who are followed by this
+            user
+        :type followed_by: :term:`ID`, optional
+
+        :param followed_of: Query only bots who follow this user
+        :type followed_of: :term:`ID`, optional
+
+        :param like_for: Query only bots who liked this entry
+        :type like_for: :term:`ID`, optional
+
+        :param rsvp_for: Query only bots who rsvp'd for this event
+        :type rsvp_for: :term:`ID`, optional
+
+        :param order_by: Specify query order; see schema at
+            ``https://<endpoint>/graphql`` for all options.
+        :type order_by: str, optional
+
+        :return: List of dictionaries each with the following
+            key/value pairs:
+
+            * :attr:`id` (:term:`ID`) -- handler for the bot
+            * :attr:`username` (*str*) -- bot's on-app username
+            * :attr:`full_name` (*str*) -- bot's full name
+            * :attr:`first_name` (*str*) -- bot's first name
+
+        """
+        pass
+
+    @load_gql
+    def donation_list(self, **kwargs):
         """Retrieve a list of recently made donations.
 
         :param search: Query only donations with a description, usernames, or
@@ -477,7 +324,7 @@ class AbstractBasicBot(AbstractBot):
         :type search: str, optional
 
         :param by_user: Query only donations made or received by this user
-        :type by_user: :term:`BID`, optional
+        :type by_user: :term:`ID`, optional
 
         :param order_by: Specify query order; see schema at
             https://<endpoint>/graphql for all options.
@@ -486,9 +333,9 @@ class AbstractBasicBot(AbstractBot):
         :return: List of dictionaries each with the following
             key/value pairs:
 
-            * :attr:`bid` (:term:`BID`) -- handler for the donation
-            * :attr:`user` (:term:`BID`) -- handler for the donation sender
-            * :attr:`target` (:term:`BID`) -- handler for the donation
+            * :attr:`id` (:term:`ID`) -- handler for the donation
+            * :attr:`user` (:term:`ID`) -- handler for the donation sender
+            * :attr:`target` (:term:`ID`) -- handler for the donation
               recipient
             * :attr:`amount` (*int*) -- donation amount in cents
             * :attr:`description` (*str*) -- donation description
@@ -497,17 +344,18 @@ class AbstractBasicBot(AbstractBot):
               liked the donation
 
         """
-        return self._query_list('DonationList', 'donation', kwargs)
+        pass
 
-    def query_transaction_list(self, **kwargs):
-        """Retrieve a list of recently made transactions.
+    @load_gql
+    def reward_list(self, **kwargs):
+        """Retrieve a list of recently made rewards.
 
-        :param search: Query only transactions with a description,
+        :param search: Query only rewards with a description,
             usernames, or user full names that contains this substring
         :type search: str, optional
 
-        :param by_user: Query only transactions made or received by this user
-        :type by_user: :term:`BID`, optional
+        :param by_user: Query only rewards made or received by this user
+        :type by_user: :term:`ID`, optional
 
         :param order_by: Specify query order; see schema at
             https://<endpoint>/graphql for all options.
@@ -516,29 +364,30 @@ class AbstractBasicBot(AbstractBot):
         :return: List of dictionaries each with the following
             key/value pairs:
 
-            * :attr:`bid` (:term:`BID`) -- handler for the transaction
-            * :attr:`user` (:term:`BID`) -- handler for the transaction sender
-            * :attr:`target` (:term:`BID`) -- handler for the
-              transaction recipient
-            * :attr:`amount` (*int*) -- transaction amount in cents
-            * :attr:`description` (*str*) -- transaction description
-            * :attr:`created` (*str*) -- datetime the transaction was created
+            * :attr:`id` (:term:`ID`) -- handler for the reward
+            * :attr:`user` (:term:`ID`) -- handler for the reward sender
+            * :attr:`target` (:term:`ID`) -- handler for the
+              reward recipient
+            * :attr:`amount` (*int*) -- reward amount in cents
+            * :attr:`description` (*str*) -- reward description
+            * :attr:`created` (*str*) -- datetime the reward was created
             * :attr:`like_count` (*int*) -- number of users who have
-              liked the transaction
+              liked the reward
 
         """
-        return self._query_list('TransactionList', 'transaction', kwargs)
+        pass
 
-    def query_news_list(self, **kwargs):
+    @load_gql
+    def news_list(self, **kwargs):
         """Retrieve a list of recently made news articles.
 
-        :param search: Query only news articles with a nonprofit
+        :param search: Query only news articles with a organization
             username or full name, title, or content that contains
             this substring,
         :type search: str, optional
 
-        :param by_user: Query only news articles posted by this nonprofit
-        :type by_user: :term:`BID`, optional
+        :param by_user: Query only news articles posted by this organization
+        :type by_user: :term:`ID`, optional
 
         :param order_by: Specify query order; see schema at
             https://<endpoint>/graphql for all options.
@@ -547,9 +396,9 @@ class AbstractBasicBot(AbstractBot):
         :return: List of dictionaries each with the following
             key/value pairs:
 
-            * :attr:`bid` (:term:`BID`) -- handler for the transaction
-            * :attr:`user` (:term:`BID`) -- handler for the associated
-              nonprofit
+            * :attr:`id` (:term:`ID`) -- handler for the reward
+            * :attr:`user` (:term:`ID`) -- handler for the associated
+              organization
             * :attr:`title` (*str*) -- title of the news article
             * :attr:`description` (*str*) -- news article content
             * :attr:`created` (*str*) -- datetime the news article was created
@@ -557,21 +406,22 @@ class AbstractBasicBot(AbstractBot):
               liked the news article
 
         """
-        return self._query_list('NewsList', 'news', kwargs)
+        pass
 
-    def query_event_list(self, **kwargs):
+    @load_gql
+    def event_list(self, **kwargs):
         """Retrieve a list of recently made events.
 
-        :param search: Query only events with a nonprofit
+        :param search: Query only events with a organization
             username or full name, title, or content that contains
             this substring,
         :type search: str, optional
 
-        :param by_user: Query only events planned by this nonprofit
-        :type by_user: :term:`BID`, optional
+        :param by_user: Query only events planned by this organization
+        :type by_user: :term:`ID`, optional
 
         :param rsvp_by: Query only events rsvp'd by this user
-        :type rsvp_by: :term:`BID`, optional
+        :type rsvp_by: :term:`ID`, optional
 
         :param order_by: Specify query order; see schema at
             https://<endpoint>/graphql for all options.
@@ -580,9 +430,9 @@ class AbstractBasicBot(AbstractBot):
         :return: List of dictionaries each with the following
             key/value pairs:
 
-            * :attr:`bid` (:term:`BID`) -- handler for the transaction
-            * :attr:`user` (:term:`BID`) -- handler for the associated
-              nonprofit
+            * :attr:`id` (:term:`ID`) -- handler for the reward
+            * :attr:`user` (:term:`ID`) -- handler for the associated
+              organization
             * :attr:`title` (*str*) -- title of the event
             * :attr:`description` (*str*) -- event content
             * :attr:`created` (*str*) -- datetime the event was created
@@ -593,9 +443,10 @@ class AbstractBasicBot(AbstractBot):
               liked the event
 
         """
-        return self._query_list('EventList', 'event', kwargs)
+        pass
 
-    def query_post_list(self, **kwargs):
+    @load_gql
+    def post_list(self, **kwargs):
         """Retrieve a list of recently made posts.
 
         :param search: Query only posts with a person's
@@ -604,7 +455,7 @@ class AbstractBasicBot(AbstractBot):
         :type search: str, optional
 
         :param by_user: Query only posts posted by this person
-        :type by_user: :term:`BID`, optional
+        :type by_user: :term:`ID`, optional
 
         :param order_by: Specify query order; see schema at
             https://<endpoint>/graphql for all options.
@@ -613,8 +464,8 @@ class AbstractBasicBot(AbstractBot):
         :return: List of dictionaries each with the following
             key/value pairs:
 
-            * :attr:`bid` (:term:`BID`) -- handler for the transaction
-            * :attr:`user` (:term:`BID`) -- handler for the associated person
+            * :attr:`id` (:term:`ID`) -- handler for the reward
+            * :attr:`user` (:term:`ID`) -- handler for the associated person
             * :attr:`title` (*str*) -- title of the post
             * :attr:`description` (*str*) -- post content
             * :attr:`created` (*str*) -- datetime the post was created
@@ -622,16 +473,47 @@ class AbstractBasicBot(AbstractBot):
               liked the post
 
         """
-        return self._query_list('PostList', 'post', kwargs)
+        pass
 
-    def query_comment_list(self, **kwargs):
+    @load_gql
+    def activity_list(self, **kwargs):
+        """Retrieve a list of recently made activitys.
+
+        :param search: Query only activitys with a person's
+            username or full name, title, or content that contains
+            this substring,
+        :type search: str, optional
+
+        :param by_user: Query only activitys activityed by this person
+        :type by_user: :term:`ID`, optional
+
+        :param order_by: Specify query order; see schema at
+            https://<endpoint>/graphql for all options.
+        :type order_by: str, optional
+
+        :return: List of dictionaries each with the following
+            key/value pairs:
+
+            * :attr:`id` (:term:`ID`) -- handler for the reward
+            * :attr:`user` (:term:`ID`) -- handler for the associated person
+            * :attr:`title` (*str*) -- title of the activity
+            * :attr:`description` (*str*) -- activity content
+            * :attr:`created` (*str*) -- datetime the activity was created
+            * :attr:`like_count` (*int*) -- number of users who have
+              liked the activity
+
+        """
+        pass
+
+    @load_gql
+    def comment_list(self, **kwargs):
         """Retrieve a list of recently made comments. Since parsing comment
         trees can be tedious, :class:`AbstractBasicBot` provides the
-        higher-level methods :func:`query_comment_chain` and
-        :func:`query_comment_tree` methods.
+        higher-level methods :func:`comment_chain` and
+        :func:`comment_tree` methods.
 
         :param has_parent: Query only comments that are replying to this entry
-        :type has_parent: :term:`BID`, optional
+        :type has_parent: :term:`ID`, optional
 
         :param search: Query only posts with a person's
             username or full name, title, or content that contains
@@ -645,9 +527,9 @@ class AbstractBasicBot(AbstractBot):
         :return: List of dictionaries each with the following
             key/value pairs:
 
-            * :attr:`bid` (:term:`BID`) -- handler for the comment
-            * :attr:`user` (:term:`BID`) -- handler for the commenting user
-            * :attr:`parent` (:term:`BID`) -- handler for entry the
+            * :attr:`id` (:term:`ID`) -- handler for the comment
+            * :attr:`user` (:term:`ID`) -- handler for the commenting user
+            * :attr:`parent` (:term:`ID`) -- handler for entry the
               comment is responding to
             * :attr:`description` (*str*) -- comment content
             * :attr:`created` (*str*) -- datetime the post was created
@@ -655,21 +537,409 @@ class AbstractBasicBot(AbstractBot):
               liked the post
 
         """
-        return self._query_list('CommentList', 'comment', kwargs)
+        pass
 
-    def query_comment_chain(self, bid):
+    @load_gql
+    def notification_list(self, **kwargs):
+        """Retrieve information for a single provided news article.
+
+        :param for_user: Query only notifications for this user
+        :type for_user: :term:`ID`, optional
+
+        :return: Dictionary with the following key/value pairs:
+
+            * :attr:`id` (:term:`ID`) -- handler for the notification
+            * :attr:`category` (*str*) -- type of notification
+            * :attr:`clicked` (*bool*) -- whether the notification has
+              been clicked
+            * :attr:`reference` (*str*) -- page redirect of notification
+            * :attr:`created` (*str*) -- datetime the notification was created
+
+        """
+        pass
+
+    @load_gql
+    def organization_node(self, **kwargs):
+        """Retrieve information for a single provided organization.
+
+        :param id: Organization to query
+        :type id: :term:`ID`
+
+        :return: Dictionary with the following key/value pairs:
+
+            * :attr:`id` (:term:`ID`) -- handler for the organization
+            * :attr:`username` (*str*) -- organization's on-app username
+            * :attr:`full_name` (*str*) -- organization name
+            * :attr:`first_name` (*str*) -- blank (included for consistency)
+
+        """
+        pass
+
+    @load_gql
+    def person_node(self, **kwargs):
+        """Retrieve information for a single provided person.
+
+        :param id: Person to query
+        :type id: :term:`ID`
+
+        :return: Dictionary with the following key/value pairs:
+
+            * :attr:`id` (:term:`ID`) -- handler for the person
+            * :attr:`username` (*str*) -- person's on-app username
+            * :attr:`full_name` (*str*) -- person's full name
+            * :attr:`first_name` (*str*) -- person's first name
+
+        """
+        pass
+
+    @load_gql
+    def bot_node(self, **kwargs):
+        """Retrieve information for a single provided person.
+
+        :param id: Person to query
+        :type id: :term:`ID`
+
+        :return: Dictionary with the following key/value pairs:
+
+            * :attr:`id` (:term:`ID`) -- handler for the person
+            * :attr:`username` (*str*) -- person's on-app username
+            * :attr:`full_name` (*str*) -- person's full name
+            * :attr:`first_name` (*str*) -- person's first name
+
+        """
+        pass
+
+    @load_gql
+    def donation_node(self, **kwargs):
+        """Retrieve information for a single provided donation.
+
+        :param id: Donation to query
+        :type id: :term:`ID`
+
+        :return: Dictionary with the following key/value pairs:
+
+            * :attr:`id` (:term:`ID`) -- handler for the donation
+            * :attr:`user` (:term:`ID`) -- handler for the donation sender
+            * :attr:`target` (:term:`ID`) -- handler for the donation
+              recipient
+            * :attr:`amount` (*int*) -- donation amount in cents
+            * :attr:`description` (*str*) -- donation description
+            * :attr:`created` (*str*) -- datetime the donation was created
+            * :attr:`like_count` (*int*) -- number of users who have
+              liked the donation
+
+        """
+        pass
+
+    @load_gql
+    def reward_node(self, **kwargs):
+        """Retrieve information for a single provided reward.
+
+        :param id: Reward to query
+        :type id: :term:`ID`
+
+        :return: Dictionary with the following key/value pairs:
+
+            * :attr:`id` (:term:`ID`) -- handler for the reward
+            * :attr:`user` (:term:`ID`) -- handler for the reward sender
+            * :attr:`target` (:term:`ID`) -- handler for the
+              reward recipient
+            * :attr:`amount` (*int*) -- reward amount in cents
+            * :attr:`description` (*str*) -- reward description
+            * :attr:`created` (*str*) -- datetime the reward was created
+            * :attr:`like_count` (*int*) -- number of users who have
+              liked the reward
+
+        """
+        pass
+
+    @load_gql
+    def news_node(self, **kwargs):
+        """Retrieve information for a single provided news article.
+
+        :param id: News article to query
+        :type id: :term:`ID`
+
+        :return: Dictionary with the following key/value pairs:
+
+            * :attr:`id` (:term:`ID`) -- handler for the reward
+            * :attr:`user` (:term:`ID`) -- handler for the associated
+              organization
+            * :attr:`title` (*str*) -- title of the news article
+            * :attr:`description` (*str*) -- news article content
+            * :attr:`created` (*str*) -- datetime the news article was created
+            * :attr:`like_count` (*int*) -- number of users who have
+              liked the news article
+
+        """
+        pass
+
+    @load_gql
+    def event_node(self, **kwargs):
+        """Retrieve information for a single provided event.
+
+        :param id: Event to query
+        :type id: :term:`ID`
+
+        :return: Dictionary with the following key/value pairs:
+
+            * :attr:`id` (:term:`ID`) -- handler for the reward
+            * :attr:`user` (:term:`ID`) -- handler for the associated
+              organization
+            * :attr:`title` (*str*) -- title of the event
+            * :attr:`description` (*str*) -- event content
+            * :attr:`created` (*str*) -- datetime the event was created
+            * :attr:`like_count` (*int*) -- number of users who have
+            * :attr:`date` (*str*) -- datetime the event is scheduled for
+            * :attr:`duration` (*int*) -- time in minutes the event will take
+            * :attr:`address` (*str*) -- physical location of the event
+              liked the event
+
+        """
+        pass
+
+    @load_gql
+    def post_node(self, **kwargs):
+        """Retrieve information for a single provided post.
+
+        :param id: Post to query
+        :type id: :term:`ID`
+
+        :return: Dictionary with the following key/value pairs:
+
+            * :attr:`id` (:term:`ID`) -- handler for the reward
+            * :attr:`user` (:term:`ID`) -- handler for the associated person
+            * :attr:`title` (*str*) -- title of the post
+            * :attr:`description` (*str*) -- post content
+            * :attr:`created` (*str*) -- datetime the post was created
+            * :attr:`like_count` (*int*) -- number of users who have
+              liked the post
+
+        """
+        pass
+
+    @load_gql
+    def activity_node(self, **kwargs):
+        """Retrieve information for a single provided activity.
+
+        :param id: Activity to query
+        :type id: :term:`ID`
+
+        :return: Dictionary with the following key/value pairs:
+
+            * :attr:`id` (:term:`ID`) -- handler for the reward
+            * :attr:`user` (:term:`ID`) -- handler for the associated person
+            * :attr:`title` (*str*) -- title of the activity
+            * :attr:`description` (*str*) -- activity content
+            * :attr:`created` (*str*) -- datetime the activity was created
+            * :attr:`like_count` (*int*) -- number of users who have
+              liked the activity
+
+        """
+        pass
+
+    @load_gql
+    def comment_node(self, **kwargs):
+        """Retrieve information for a single provided comment.
+
+        :param id: Comment to query
+        :type id: :term:`ID`
+
+        :return: Dictionary with the following key/value pairs:
+
+            * :attr:`id` (:term:`ID`) -- handler for the comment
+            * :attr:`user` (:term:`ID`) -- handler for the commenting user
+            * :attr:`parent` (:term:`ID`) -- handler for entry the
+              comment is responding to
+            * :attr:`description` (*str*) -- comment content
+            * :attr:`created` (*str*) -- datetime the post was created
+            * :attr:`like_count` (*int*) -- number of users who have
+              liked the post
+
+        """
+        pass
+
+    @load_gql
+    def notification_node(self, **kwargs):
+        """Retrieve information for a single provided news article.
+
+        :param id: Notification node to query
+        :type id: :term:`ID`
+
+        :return: Dictionary with the following key/value pairs:
+
+            * :attr:`id` (:term:`ID`) -- handler for the reward
+            * :attr:`category` (*str*) -- type of notification
+            * :attr:`clicked` (*bool*) -- whether the notification has
+              been clicked
+            * :attr:`reference` (*str*) -- page redirect of notification
+            * :attr:`created` (*str*) -- datetime the notification was created
+
+        """
+        pass
+
+    @load_gql
+    def activity_create(self, **kwargs):
+        """Create a new activity
+
+        :param title: Activity title
+        :type title: str
+
+        :param description: Activity content
+        :type description: str
+
+        :return: handler for the activity
+        :rtype: :term:`ID`
+
+        """
+        pass
+
+    @load_gql
+    def reward_create(self, **kwargs):
+        """Send a reward to the provided person
+
+        :param target: Recipient of the reward
+        :type target: :term:`ID`
+
+        :param amount: Reward amount denominated in cents
+        :type amount: int
+
+        :param description: Reward description
+        :type description: str
+
+        :return: handler for the reward
+        :rtype: :term:`ID`
+
+        """
+        pass
+
+    @load_gql
+    def comment_create(self, **kwargs):
+        """Create a new comment replying to the provided entry
+
+        :param parent: Entry to reply to
+        :type target: :term:`ID`
+
+        :param description: Comment contents
+        :type description: str
+
+        :return: handler for the comment
+        :rtype: :term:`ID`
+
+        """
+        pass
+
+    @load_gql
+    def bot_update(self, **kwargs):
+        """Update the bot's description
+
+        :param description: New biography contents
+        :type description: str
+
+        :return: Whether or not the operation was successful
+        :rtype: bool
+
+        """
+        pass
+
+    @load_gql
+    def activity_update(self, **kwargs):
+        """Update a new activity
+
+        :param title: Activity title
+        :type title: str
+
+        :param description: Activity content
+        :type description: str
+
+        :param active: Whether or not the activity is currently active
+        :type active: str
+
+        :param reward_min: Minimum reward
+        :type active: str
+
+        :param reward_range: Maximum reward minus minimum reward
+        :type active: str
+
+        :param scratch: Activity scratch data that won't get displayed
+        :type scratch: str
+
+        :return: handler for the activity
+        :rtype: :term:`ID`
+
+        """
+        pass
+
+    @load_gql
+    def like_create(self, **kwargs):
+        """Like the provided entry. If the bot has already liked the entry,
+        then there is no effect.
+
+        :param target: Entry to unlike
+        :type target: str
+
+        :return: Whether or not the operation was successful
+        :rtype: bool
+
+        """
+        pass
+
+    @load_gql
+    def like_delete(self, **kwargs):
+        """Unlike the provided entry. If the bot has not liked the entry,
+        then there is no effect.
+
+        :param target: Entry to like
+        :type target: str
+
+        :return: Whether or not the operation was successful
+        :rtype: bool
+
+        """
+        pass
+
+    @load_gql
+    def follow_create(self, **kwargs):
+        """Follow the provided user. If the bot is currently following the
+        user, then there is no effect.
+
+        :param target: User to follow
+        :type target: str
+
+        :return: Whether or not the operation was successful
+        :rtype: bool
+
+        """
+        pass
+
+    @load_gql
+    def follow_delete(self, **kwargs):
+        """Unfollow the provided user. If the bot is not currently following
+        the user, then there is no effect.
+
+        :param target: User to follow
+        :type target: str
+
+        :return: Whether or not the operation was successful
+        :rtype: bool
+
+        """
+        pass
+
+    @load_gql
+    def comment_chain(self, id):
         """Retrieve the entire chain of comments and root :term:`entry` that
         the provided comment is responding to.
 
-        :param bid: Starting comment
-        :type bid: :term:`BID`
+        :param id: Starting comment
+        :type id: :term:`ID`
 
         :return: List of dictionaries each with the following
             key/value pairs:
 
-            * :attr:`bid` (:term:`BID`) -- handler for the comment
-            * :attr:`user` (:term:`BID`) -- handler for the commenting user
-            * :attr:`parent` (:term:`BID`) -- handler for entry the
+            * :attr:`id` (:term:`ID`) -- handler for the comment
+            * :attr:`user` (:term:`ID`) -- handler for the commenting user
+            * :attr:`parent` (:term:`ID`) -- handler for entry the
               comment is responding to
             * :attr:`description` (*str*) -- comment content
             * :attr:`created` (*str*) -- datetime the post was created
@@ -677,19 +947,20 @@ class AbstractBasicBot(AbstractBot):
               liked the post
 
         """
-        comment = self.query_comment(bid)
-        return (self.query_comment_chain(comment['parent'])
+        comment = self.comment(id)
+        return (self.comment_chain(comment['parent'])
                 if comment['parent'].type == 'comment' else [
-                    getattr(self, 'query_{}'.format(comment['parent'].type))(
+                    getattr(self, '{}'.format(comment['parent'].type))(
                         comment['parent'])
                 ]) + [comment]
 
-    def query_comment_tree(self, bid):
+    @load_gql
+    def comment_tree(self, id):
         """Retrieve the entire conversation tree of comments stemming from the
         provided comment.
 
-        :param bid: Starting comment
-        :type bid: :term:`BID`
+        :param id: Starting comment
+        :type id: :term:`ID`
 
         :return: Recursive list of dictionaries with the keys/value pairs:
 
@@ -701,9 +972,9 @@ class AbstractBasicBot(AbstractBot):
           Each :attr:`comment` dictionary of the structure above
           contains the following key/value pairs:
 
-            * :attr:`bid` (:term:`BID`) -- handler for the comment
-            * :attr:`user` (:term:`BID`) -- handler for the commenting user
-            * :attr:`parent` (:term:`BID`) -- handler for entry the
+            * :attr:`id` (:term:`ID`) -- handler for the comment
+            * :attr:`user` (:term:`ID`) -- handler for the commenting user
+            * :attr:`parent` (:term:`ID`) -- handler for entry the
               comment is responding to
             * :attr:`description` (*str*) -- comment content
             * :attr:`created` (*str*) -- datetime the post was created
@@ -712,438 +983,66 @@ class AbstractBasicBot(AbstractBot):
 
         """
         return [{
-            'comment': self.query_comment(x.bid),
-            'replies': self.query_comment_tree(x.bid)
-        } for x in self.query_comment_list(has_parent=bid)]
+            'comment': self.comment(x.id),
+            'replies': self.comment_tree(x.id)
+        } for x in self.comment_list(has_parent=id)]
 
-    def query_user(self, bid):
-        """Retrieve information for a single provided user.
+    def get_app_link(self, id):
+        """Get an app link to the user or app based on the id"""
+        return requests.get('https://{}/notifications/app_link/{}'.format(
+            self._endpoint, id)).content.decode()
 
-        :param followed_by: User to query
-        :type followed_by: :term:`BID`
+    def _node(self, op, **kwargs):
+        return self.api_call(op, kwargs)
 
-        :return: Dictionary with the following key/value pairs:
+    def _list(self, op, **kwargs):
+        if 'first' not in kwargs:
+            kwargs['first'] = AbstractBasicBot.FIRST
 
-            * :attr:`bid` (:term:`BID`) -- handler for the user
-            * :attr:`username` (*str*) -- user's on-app username
-            * :attr:`short_name` (*str*) -- either the first name alone if
-              available OR the last name alone (this is typically the
-              best way to refer to a user since nonprofits don't have
-              first names)
-            * :attr:`full_name` (*str*) -- user's full name
-            * :attr:`first_name` (*str*) -- user's first name
-            * :attr:`last_name` (*str*) -- user's last name
+        return self.api_call(op, kwargs)
 
-        """
-        return self._query_single('IbisUser', 'user', bid)
+    def _create(self, op, **kwargs):
+        assert 'user' not in kwargs
+        kwargs['user'] = self.id
+        return utils.first_item(self.api_call(op, kwargs))
 
-    def query_nonprofit(self, bid):
-        """Retrieve information for a single provided nonprofit.
+    def _update(self, op, **kwargs):
+        assert 'id' in kwargs
+        assert 'user' not in kwargs
+        return utils.first_item(self.api_call(op, kwargs))
 
-        :param followed_by: Nonprofit to query
-        :type followed_by: :term:`BID`
+    def _delete(self, op, **kwargs):
+        # get operation from OPS[op]
+        # create variables dict from kwargs
+        # fill in user=id
+        # call operation
+        pass
 
-        :return: Dictionary with the following key/value pairs:
+    @staticmethod
+    def _collapse_connections(result):
+        """Accept a GraphQL JSON object result and collapse all edge/nodes
+        connections into Python lists
 
-            * :attr:`bid` (:term:`BID`) -- handler for the nonprofit
-            * :attr:`username` (*str*) -- nonprofit's on-app username
-            * :attr:`short_name` (*str*) -- nonprofit name
-            * :attr:`full_name` (*str*) -- nonprofit name
-            * :attr:`first_name` (*str*) -- blank (included for consistency)
-            * :attr:`last_name` (*str*) -- nonprofit name
+        :param obj: GraphQL result
+        :type obj: dict
 
-        """
-        return self._query_single('Nonprofit', 'nonprofit', bid)
-
-    def query_person(self, bid):
-        """Retrieve information for a single provided person.
-
-        :param followed_by: Person to query
-        :type followed_by: :term:`BID`
-
-        :return: Dictionary with the following key/value pairs:
-
-            * :attr:`bid` (:term:`BID`) -- handler for the person
-            * :attr:`username` (*str*) -- person's on-app username
-            * :attr:`short_name` (*str*) -- person's first name
-            * :attr:`full_name` (*str*) -- person's full name
-            * :attr:`first_name` (*str*) -- person's first name
-            * :attr:`last_name` (*str*) -- person's last name
+        :return: Copy of result
+        :rtype: dict
 
         """
-        return self._query_single('Person', 'person', bid)
-
-    def query_donation(self, bid):
-        """Retrieve information for a single provided donation.
-
-        :param followed_by: Donation to query
-        :type followed_by: :term:`BID`
-
-        :return: Dictionary with the following key/value pairs:
-
-            * :attr:`bid` (:term:`BID`) -- handler for the donation
-            * :attr:`user` (:term:`BID`) -- handler for the donation sender
-            * :attr:`target` (:term:`BID`) -- handler for the donation
-              recipient
-            * :attr:`amount` (*int*) -- donation amount in cents
-            * :attr:`description` (*str*) -- donation description
-            * :attr:`created` (*str*) -- datetime the donation was created
-            * :attr:`like_count` (*int*) -- number of users who have
-              liked the donation
-
-        """
-        return self._query_single('Donation', 'donation', bid)
-
-    def query_transaction(self, bid):
-        """Retrieve information for a single provided transaction.
-
-        :param followed_by: Transaction to query
-        :type followed_by: :term:`BID`
-
-        :return: Dictionary with the following key/value pairs:
-
-            * :attr:`bid` (:term:`BID`) -- handler for the transaction
-            * :attr:`user` (:term:`BID`) -- handler for the transaction sender
-            * :attr:`target` (:term:`BID`) -- handler for the
-              transaction recipient
-            * :attr:`amount` (*int*) -- transaction amount in cents
-            * :attr:`description` (*str*) -- transaction description
-            * :attr:`created` (*str*) -- datetime the transaction was created
-            * :attr:`like_count` (*int*) -- number of users who have
-              liked the transaction
-
-        """
-        return self._query_single('Transaction', 'transaction', bid)
-
-    def query_news(self, bid):
-        """Retrieve information for a single provided news article.
-
-        :param followed_by: News article to query
-        :type followed_by: :term:`BID`
-
-        :return: Dictionary with the following key/value pairs:
-
-            * :attr:`bid` (:term:`BID`) -- handler for the transaction
-            * :attr:`user` (:term:`BID`) -- handler for the associated
-              nonprofit
-            * :attr:`title` (*str*) -- title of the news article
-            * :attr:`description` (*str*) -- news article content
-            * :attr:`created` (*str*) -- datetime the news article was created
-            * :attr:`like_count` (*int*) -- number of users who have
-              liked the news article
-
-        """
-        return self._query_single('News', 'news', bid)
-
-    def query_event(self, bid):
-        """Retrieve information for a single provided event.
-
-        :param followed_by: Event to query
-        :type followed_by: :term:`BID`
-
-        :return: Dictionary with the following key/value pairs:
-
-            * :attr:`bid` (:term:`BID`) -- handler for the transaction
-            * :attr:`user` (:term:`BID`) -- handler for the associated
-              nonprofit
-            * :attr:`title` (*str*) -- title of the event
-            * :attr:`description` (*str*) -- event content
-            * :attr:`created` (*str*) -- datetime the event was created
-            * :attr:`like_count` (*int*) -- number of users who have
-            * :attr:`date` (*str*) -- datetime the event is scheduled for
-            * :attr:`duration` (*int*) -- time in minutes the event will take
-            * :attr:`address` (*str*) -- physical location of the event
-              liked the event
-
-        """
-        return self._query_single('Event', 'event', bid)
-
-    def query_post(self, bid):
-        """Retrieve information for a single provided post.
-
-        :param followed_by: Post to query
-        :type followed_by: :term:`BID`
-
-        :return: Dictionary with the following key/value pairs:
-
-            * :attr:`bid` (:term:`BID`) -- handler for the transaction
-            * :attr:`user` (:term:`BID`) -- handler for the associated person
-            * :attr:`title` (*str*) -- title of the post
-            * :attr:`description` (*str*) -- post content
-            * :attr:`created` (*str*) -- datetime the post was created
-            * :attr:`like_count` (*int*) -- number of users who have
-              liked the post
-
-        """
-        return self._query_single('Post', 'post', bid)
-
-    def query_comment(self, bid):
-        """Retrieve information for a single provided comment.
-
-        :param followed_by: Comment to query
-        :type followed_by: :term:`BID`
-
-        :return: Dictionary with the following key/value pairs:
-
-            * :attr:`bid` (:term:`BID`) -- handler for the comment
-            * :attr:`user` (:term:`BID`) -- handler for the commenting user
-            * :attr:`parent` (:term:`BID`) -- handler for entry the
-              comment is responding to
-            * :attr:`description` (*str*) -- comment content
-            * :attr:`created` (*str*) -- datetime the post was created
-            * :attr:`like_count` (*int*) -- number of users who have
-              liked the post
-
-        """
-        return self._query_single('Comment', 'comment', bid)
-
-    def create_post(self, title, description):
-        """Create a new post
-
-        :param title: Post title
-        :type title: str
-
-        :param description: Post content
-        :type description: str
-
-        :return: handler for the post
-        :rtype: :term:`BID`
-
-        """
-        return self._make_bid(
-            utils.first_item(
-                self.api_call(
-                    self.OPS['PostCreate'],
-                    variables={
-                        'user': self._parse_bid(self.bid)['id'],
-                        'title': title,
-                        'description': description,
-                    },
-                ),
-                depth=3,
-            ),
-            'post',
-        )
-
-    def create_donation(self, target, amount, description):
-        """Send a donation to the provided nonprofit
-
-        :param target: Recipient of the donation
-        :type target: :term:`BID`
-
-        :param amount: Donation amount denominated in cents
-        :type amount: int
-
-        :param description: Donation description
-        :type description: str
-
-        :return: handler for the donation
-        :rtype: :term:`BID`
-
-        """
-        return self._make_bid(
-            utils.first_item(
-                self.api_call(
-                    self.OPS['DonationCreate'],
-                    variables={
-                        'user': self._parse_bid(self.bid)['id'],
-                        'target': self._parse_bid(target)['id'],
-                        'amount': amount,
-                        'description': description,
-                    },
-                ),
-                depth=3,
-            ),
-            'donation',
-        )
-
-    def create_transaction(self, target, amount, description):
-        """Send a transaction to the provided person
-
-        :param target: Recipient of the transaction
-        :type target: :term:`BID`
-
-        :param amount: Transaction amount denominated in cents
-        :type amount: int
-
-        :param description: Transaction description
-        :type description: str
-
-        :return: handler for the transaction
-        :rtype: :term:`BID`
-
-        """
-        return self._make_bid(
-            utils.first_item(
-                self.api_call(
-                    self.OPS['TransactionCreate'],
-                    variables={
-                        'user': self._parse_bid(self.bid)['id'],
-                        'target': self._parse_bid(target)['id'],
-                        'amount': amount,
-                        'description': description,
-                    },
-                ),
-                depth=3,
-            ),
-            'transaction',
-        )
-
-    def create_comment(self, parent, description):
-        """Create a new comment replying to the provided entry
-
-        :param parent: Entry to reply to
-        :type target: :term:`BID`
-
-        :param description: Comment contents
-        :type description: str
-
-        :return: handler for the comment
-        :rtype: :term:`BID`
-
-        """
-        return self._make_bid(
-            utils.first_item(
-                self.api_call(
-                    self.OPS['CommentCreate'],
-                    variables={
-                        'user': self._parse_bid(self.bid)['id'],
-                        'parent': self._parse_bid(parent)['id'],
-                        'description': description,
-                    },
-                ),
-                depth=3,
-            ),
-            'comment',
-        )
-
-    def update_bio(self, description):
-        """Update the bot's description
-
-        :param description: New biography contents
-        :type description: str
-
-        :return: Whether or not the operation was successful
-        :rtype: bool
-
-        """
-        return 'errors' not in self.api_call(
-            self.OPS['BioUpdate'],
-            variables={
-                'user': self._parse_bid(self.bid)['id'],
-                'description': description,
-            },
-        )
-
-    def create_like(self, target):
-        """Like the provided entry. If the bot has already liked the entry,
-        then there is no effect.
-
-        :param target: Entry to unlike
-        :type target: str
-
-        :return: Whether or not the operation was successful
-        :rtype: bool
-
-        """
-        return 'errors' not in self.api_call(
-            self.OPS['LikeCreate'],
-            variables={
-                'user': self._parse_bid(self.bid)['id'],
-                'target': self._parse_bid(target)['id'],
-            },
-        )
-
-    def delete_like(self, target):
-        """Unlike the provided entry. If the bot has not liked the entry,
-        then there is no effect.
-
-        :param target: Entry to like
-        :type target: str
-
-        :return: Whether or not the operation was successful
-        :rtype: bool
-
-        """
-        return 'errors' not in self.api_call(
-            self.OPS['LikeDelete'],
-            variables={
-                'user': self._parse_bid(self.bid)['id'],
-                'target': self._parse_bid(target)['id'],
-            },
-        )
-
-    def create_follow(self, target):
-        """Follow the provided user. If the bot is currently following the
-        user, then there is no effect.
-
-        :param target: User to follow
-        :type target: str
-
-        :return: Whether or not the operation was successful
-        :rtype: bool
-
-        """
-        return 'errors' not in self.api_call(
-            self.OPS['FollowCreate'],
-            variables={
-                'user': self._parse_bid(self.bid)['id'],
-                'target': self._parse_bid(target)['id'],
-            },
-        )
-
-    def delete_follow(self, target):
-        """Unfollow the provided user. If the bot is not currently following
-        the user, then there is no effect.
-
-        :param target: User to follow
-        :type target: str
-
-        :return: Whether or not the operation was successful
-        :rtype: bool
-
-        """
-        return 'errors' not in self.api_call(
-            self.OPS['FollowDelete'],
-            variables={
-                'user': self.id,
-                'target': target.id,
-                'user': self._parse_bid(self.bid)['id'],
-                'target': self._parse_bid(target)['id'],
-            },
-        )
-
-    def _clean_result(self, node, bid_conf):
-        return dict([[
-            x['name'],
-            self._make_bid(
-                reduce(operator.getitem, x['location'], node), x['type'])
-        ] for x in bid_conf(node)] + [[
-            utils.snake_case(k),
-            v,
-        ] for k, v in node.items() if type(v) != dict and k not in ['ids'] +
-                                      [y['name'] for y in bid_conf(node)]])
-
-    def _query_list(self, ops_key, bid_conf_key, variables):
-        return [
-            self._clean_result(x['node'], self.BID_CONF[bid_conf_key])
-            for x in utils.first_item(
-                self.api_call(
-                    self.OPS[ops_key],
-                    variables={
-                        utils.mixed_case(k): self._parse_bid(v)['id'] if self.
-                        _is_bid(v) else v
-                        for k, v in variables.items() if v is not None
-                    },
-                ))['edges']
-        ]
-
-    def _query_single(self, ops_key, bid_conf_key, bid):
-        return self._clean_result(
-            utils.first_item(
-                self.api_call(
-                    self.OPS[ops_key],
-                    variables={'id': self._parse_bid(bid)['id']},
-                )),
-            self.BID_CONF[bid_conf_key],
-        )
+        assert len(result) == 1
+
+        def _recurse(obj):
+            if type(obj) == list:
+                return [_recurse(x) for x in obj]
+            elif type(obj) == dict:
+                if 'edges' in obj:
+                    return _recurse(obj['edges'])
+                if 'node' in obj:
+                    return _recurse(obj['node'])
+                else:
+                    return {utils.snake_case(x): _recurse(obj[x]) for x in obj}
+            else:
+                return obj
+
+        return utils.first_item(_recurse(result))
