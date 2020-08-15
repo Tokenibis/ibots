@@ -24,11 +24,11 @@ OPS = {
 }
 
 
-class AuthenticateBotException(Exception):
+class BotStopException(Exception):
     pass
 
 
-class StopBotException(Exception):
+class BotNetworkException(Exception):
     pass
 
 
@@ -41,8 +41,8 @@ class AbstractBot(ABC):
 
     def __init__(self, endpoint, username, password, waiter):
 
-        self.logger = logging.getLogger('BOT_{}'.format(
-            self.__class__.__name__.upper()))
+        self.logger = logging.getLogger(
+            utils.snake_case(self.__class__.__name__).upper())
         self._endpoint = endpoint
         self._waiter = waiter
         self._stop = False
@@ -55,15 +55,17 @@ class AbstractBot(ABC):
                 'password': password
             })
 
-        self.id = login_response.json()['user_id']
-        if not self.id:
-            self.logger.error('Failed to log in')
-            raise AuthenticateBotException
+        try:
+            self.id = login_response.json()['user_id']
+            assert self.id
 
-        self._client = Client(
-            transport=RequestsHTTPTransport(
-                url='https://{}/graphql/'.format(self._endpoint),
-                cookies=login_response.cookies))
+            self._client = Client(
+                transport=RequestsHTTPTransport(
+                    url='https://{}/graphql/'.format(self._endpoint),
+                    cookies=login_response.cookies))
+        except Exception:
+            self.logger.error('Failed to log in')
+            raise BotNetworkException
 
     def api_call(self, operation, variables=None):
         """Execute the gql query and variables on the remote endpoint.
@@ -90,15 +92,19 @@ class AbstractBot(ABC):
                     self.logger.error(
                         'Variable "{}" not supported in {}'.format(
                             x, operation))
-                    raise StopBotException
+                    raise ValueError
 
-        return self._client.execute(
-            parsed,
-            variable_values={
-                utils.mixed_case(x): variables[x]
-                for x in variables
-            },
-        )
+        try:
+            return self._client.execute(
+                parsed,
+                variable_values={
+                    utils.mixed_case(x): variables[x]
+                    for x in variables
+                },
+            )
+        except Exception as e:
+            self.logger.error(e)
+            raise BotNetworkException
 
     def api_wait(self, timeout=None, exit_any=False):
         """Wait until something happens at the remote endpoint.
@@ -118,7 +124,7 @@ class AbstractBot(ABC):
         while not result:
             # received signal from server to stop the bot
             if self._stop:
-                raise StopBotException
+                raise BotStopException
             # received signal from server to enter interactive mode
             if self._interact:
                 IPython.embed()

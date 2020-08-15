@@ -8,13 +8,16 @@ import argparse
 from importlib import import_module
 from flask import Flask, request
 from threading import Thread, Event
-from ibots.base import StopBotException
+from ibots.base import BotStopException, BotNetworkException
 
 logger = logging.getLogger('CONTROL')
 
+PERIOD = 4
+RETRY = 16
+
 
 class Waiter:
-    def __init__(self, endpoint, period=4):
+    def __init__(self, endpoint, period=PERIOD):
         self._endpoint = endpoint
         self._period = period
 
@@ -58,32 +61,40 @@ def start(port, level, std, endpoint, config, start_names=[]):
 
     waiter = Waiter(endpoint)
 
-    # instantiate all bots
-    bots = {
+    classes = {
         x: getattr(
             import_module(config[x]['class'].rsplit('.', 1)[0]),
-            config[x]['class'].rsplit('.', 1)[1])(
-                endpoint,
-                x,
-                config[x]['password'],
-                waiter,
-            )
-        for x in config
+            config[x]['class'].rsplit('.', 1)[1])
+        for x in config for x in config
     }
 
     # run api polling
     poll_thread = Thread(target=waiter.poll, daemon=True)
     poll_thread.start()
 
-    running = {x: False for x in bots}
+    running = {x: False for x in config}
+    bots = {x: None for x in config}
 
-    def _run_bot(name, bot, kwargs):
-        try:
-            running[name] = True
-            logger.info('Running bot {}'.format(name))
-            bot.run(**kwargs)
-        except StopBotException:
-            logger.info('Stopped bot {}'.format(name))
+    def _run_bot(name, cls, init_args, run_args):
+        running[name] = True
+        while True:
+            try:
+                bot = cls(**init_args)
+                bots[name] = bot
+                logger.info('Running bot {}'.format(name))
+                bot.run(**run_args)
+            except BotStopException:
+                logger.info('Stopped bot {}'.format(name))
+                break
+            except BotNetworkException:
+                logger.info('{} lost connection; trying again in {}s'.format(
+                    name, RETRY))
+                time.sleep(RETRY)
+                continue
+
+            logger.error('{} terminated logically; please fix'.format(name))
+            break
+
         running[name] = False
 
     # run bots
@@ -92,10 +103,17 @@ def start(port, level, std, endpoint, config, start_names=[]):
             target=_run_bot,
             args=(
                 x,
-                bots[x],
+                classes[x],
+                {
+                    'endpoint': endpoint,
+                    'username': x,
+                    'password': config[x]['password'],
+                    'waiter': waiter,
+                },
                 config[x]['args'],
             ),
-            daemon=True)
+            daemon=True,
+        )
         for x in start_names
     }
     for x in threads:
@@ -140,41 +158,41 @@ def start(port, level, std, endpoint, config, start_names=[]):
             for x in sorted(target_set)
         }
 
-    @app.route('/start', methods=['POST'])
-    def start():
-        target_set = set(
-            request.form.to_dict(flat=False)['bots'] if request.
-            form['bots'] else [x for x in config['bots'] if not running[x]])
-        assert all(not running[x] for x in target_set)
+    # @app.route('/start', methods=['POST'])
+    # def start():
+    #     target_set = set(
+    #         request.form.to_dict(flat=False)['bots'] if request.
+    #         form['bots'] else [x for x in config['bots'] if not running[x]])
+    #     assert all(not running[x] for x in target_set)
 
-        threads = {
-            x: Thread(target=_run_bot, args=(x, bots[x]), daemon=True)
-            for x in target_set
-        }
+    #     threads = {
+    #         x: Thread(target=_run_bot, args=(x, bots[x]), daemon=True)
+    #         for x in target_set
+    #     }
 
-        for x in threads:
-            threads[x].start()
+    #     for x in threads:
+    #         threads[x].start()
 
-        return 'Done'
+    #     return 'Done'
 
-    @app.route('/stop', methods=['POST'])
-    def stop():
-        target_set = set(
-            request.form.to_dict(flat=False)['bots'] if request.
-            form['bots'] else [x for x in config['bots'] if running[x]])
-        assert all(running[x] for x in target_set)
+    # @app.route('/stop', methods=['POST'])
+    # def stop():
+    #     target_set = set(
+    #         request.form.to_dict(flat=False)['bots'] if request.
+    #         form['bots'] else [x for x in config['bots'] if running[x]])
+    #     assert all(running[x] for x in target_set)
 
-        for x in target_set:
-            x._stop = True
+    #     for x in target_set:
+    #         x._stop = True
 
-        while target_set:
-            stopped = set()
-            for x in target_set:
-                if not running[x]:
-                    stopped.add(x)
-                target_set.difference_update(stopped)
+    #     while target_set:
+    #         stopped = set()
+    #         for x in target_set:
+    #             if not running[x]:
+    #                 stopped.add(x)
+    #             target_set.difference_update(stopped)
 
-        return 'Done'
+    #     return 'Done'
 
     @app.route('/interact', methods=['POST'])
     def interact():
