@@ -24,7 +24,7 @@ def first_item(x, depth=1):
 
 def localtime(initial=None):
     if type(initial) == str:
-        return parser.parse(initial).astimezone(timezone('MST'))
+        return parser.parse(initial).astimezone(timezone('America/Denver'))
     elif type(initial) == datetime:
-        return datetime.astimezone(timezone('MST'))
-    return datetime.now(timezone('MST'))
+        return datetime.astimezone(timezone('America/Denver'))
+    return datetime.now(timezone('America/Denver'))

@@ -77,18 +77,25 @@ def start(port, level, std, endpoint, config, start_names=[]):
 
     running = {x: False for x in bots}
 
-    def _run_bot(name, bot):
+    def _run_bot(name, bot, kwargs):
         try:
             running[name] = True
             logger.info('Running bot {}'.format(name))
-            bot.run()
+            bot.run(**kwargs)
         except StopBotException:
             logger.info('Stopped bot {}'.format(name))
         running[name] = False
 
     # run bots
     threads = {
-        x: Thread(target=_run_bot, args=(x, bots[x]), daemon=True)
+        x: Thread(
+            target=_run_bot,
+            args=(
+                x,
+                bots[x],
+                config[x]['args'],
+            ),
+            daemon=True)
         for x in start_names
     }
     for x in threads:
@@ -209,7 +216,7 @@ def get_parser():
         '-l',
         '--level',
         help='Set log level ({})'.format('|'.join(logging._nameToLevel)),
-        default='info',
+        default='INFO',
     )
     parser.add_argument(
         '-b',

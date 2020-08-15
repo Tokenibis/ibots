@@ -1,12 +1,14 @@
 import os
+import json
 import IPython
 import logging
 import requests
-import ibots.utils as utils
 
 from abc import ABC, abstractmethod
+from datetime import timedelta
 from gql import gql, Client
 from gql.transport.requests import RequestsHTTPTransport
+from ibots import utils
 
 DIR = os.path.dirname(os.path.realpath(__file__))
 
@@ -20,6 +22,10 @@ OPS = {
         )).read()
     for x in os.listdir(os.path.join(DIR, 'graphql', 'bot'))
 }
+
+
+class AuthenticateBotException(Exception):
+    pass
 
 
 class StopBotException(Exception):
@@ -52,7 +58,7 @@ class AbstractBot(ABC):
         self.id = login_response.json()['user_id']
         if not self.id:
             self.logger.error('Failed to log in')
-            return
+            raise AuthenticateBotException
 
         self._client = Client(
             transport=RequestsHTTPTransport(
@@ -73,9 +79,25 @@ class AbstractBot(ABC):
 
         """
 
+        parsed = gql(operation)
+
+        assert len(parsed.definitions) == 1
+        if variables:
+            for x in variables:
+                if x not in set(
+                        utils.snake_case(y.variable.name.value)
+                        for y in parsed.definitions[0].variable_definitions):
+                    self.logger.error(
+                        'Variable "{}" not supported in {}'.format(
+                            x, operation))
+                    raise StopBotException
+
         return self._client.execute(
-            gql(operation),
-            variable_values=variables,
+            parsed,
+            variable_values={
+                utils.mixed_case(x): variables[x]
+                for x in variables
+            },
         )
 
     def api_wait(self, timeout=None, exit_any=False):
@@ -113,23 +135,22 @@ class AbstractBot(ABC):
                     OPS['__notifier'],
                     variables={'id': self.id},
             )['notifier']['unseenCount']:
-                self.logger.debug('Got an update')
-                print(self.api_call(
+                self.api_call(
                     OPS['__notifier_update'],
                     variables={
                         'id': self.id,
-                        'lastSeen': str(utils.localtime()),
+                        'last_seen': str(utils.localtime()),
                     },
-                ))
+                )
                 break
 
-            # break breaks of timeout
-            if timeout and utils.localtime() - start < timeout:
+            # break if timeout
+            if timeout and utils.localtime() - start < timedelta(
+                    seconds=timeout):
                 break
 
             result = False
             event = None
-        print('out here now')
 
     def _status(self):
         """Calculate and return the status of the bot. This method should only
@@ -177,10 +198,7 @@ class AbstractBasicBot(AbstractBot):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
-        info = self.bot_node(id=self.id)
-        self.username = info['username']
-        self.name = info['name']
+        self.refresh_node()
 
     def load_gql(func):
         def wrapper(*args, **kwargs):
@@ -190,20 +208,25 @@ class AbstractBasicBot(AbstractBot):
 
             assert func.__code__.co_code == empty.__code__.co_code
 
-            args[0].logger.debug('Calling {} ({})'.format(
-                func.__name__,
-                kwargs,
-            ))
+            # TODO: add assertions for proper function documentation
 
-            # add assertions to make sure functions are properly documented
+            if func.__name__.split('_')[-1] == 'create':
+                args[0].logger.info('Calling "{}"'.format(func.__name__))
+            else:
+                args[0].logger.debug('Calling "{}"'.format(func.__name__))
+            args[0].logger.debug('Variables: {}'.format(
+                json.dumps(kwargs, indent=2)))
 
-            kwargs = {utils.mixed_case(x): kwargs[x] for x in kwargs}
-
-            return AbstractBasicBot._collapse_connections(
+            result = AbstractBasicBot._collapse_connections(
                 getattr(
                     AbstractBasicBot,
                     '_' + func.__name__.split('_')[-1],
                 )(*args, OPS[func.__name__], **kwargs))
+
+            args[0].logger.debug('Result: {}'.format(
+                json.dumps(result, indent=2)))
+
+            return result
 
         return wrapper
 
@@ -926,7 +949,9 @@ class AbstractBasicBot(AbstractBot):
         """
         pass
 
-    @load_gql
+    def refresh_node(self):
+        self.node = self.bot_node(id=self.id)
+
     def comment_chain(self, id):
         """Retrieve the entire chain of comments and root :term:`entry` that
         the provided comment is responding to.
@@ -954,10 +979,9 @@ class AbstractBasicBot(AbstractBot):
                         comment['parent'])
                 ]) + [comment]
 
-    @load_gql
-    def comment_tree(self, id):
+    def comment_tree(self, root):
         """Retrieve the entire conversation tree of comments stemming from the
-        provided comment.
+        provided entry.
 
         :param id: Starting comment
         :type id: :term:`ID`
@@ -983,9 +1007,10 @@ class AbstractBasicBot(AbstractBot):
 
         """
         return [{
-            'comment': self.comment(x.id),
-            'replies': self.comment_tree(x.id)
-        } for x in self.comment_list(has_parent=id)]
+            y: z
+            for y, z in list(x.items()) +
+            [['replies_', self.comment_tree(root=x['id'])]]
+        } for x in self.comment_list(parent=root)]
 
     def get_app_link(self, id):
         """Get an app link to the user or app based on the id"""
@@ -997,7 +1022,7 @@ class AbstractBasicBot(AbstractBot):
 
     def _list(self, op, **kwargs):
         if 'first' not in kwargs:
-            kwargs['first'] = AbstractBasicBot.FIRST
+            kwargs['first'] = self.FIRST
 
         return self.api_call(op, kwargs)
 
@@ -1012,11 +1037,9 @@ class AbstractBasicBot(AbstractBot):
         return utils.first_item(self.api_call(op, kwargs))
 
     def _delete(self, op, **kwargs):
-        # get operation from OPS[op]
-        # create variables dict from kwargs
-        # fill in user=id
-        # call operation
-        pass
+        assert 'user' not in kwargs
+        kwargs['user'] = self.id
+        return utils.first_item(self.api_call(op, kwargs))
 
     @staticmethod
     def _collapse_connections(result):
