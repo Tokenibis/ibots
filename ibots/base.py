@@ -32,6 +32,10 @@ class BotNetworkException(Exception):
     pass
 
 
+class BotBalanceException(Exception):
+    pass
+
+
 class AbstractBot(ABC):
     """Say something about the fact that it uses
 
@@ -66,6 +70,14 @@ class AbstractBot(ABC):
         except Exception:
             self.logger.error('Failed to log in')
             raise BotNetworkException
+
+        self.refresh_node()
+
+    def refresh_node(self):
+        self.node = self.api_call(
+            OPS['__status'],
+            variables={'id': self.id},
+        )['bot']
 
     def api_call(self, operation, variables=None):
         """Execute the gql query and variables on the remote endpoint.
@@ -158,38 +170,6 @@ class AbstractBot(ABC):
             result = False
             event = None
 
-    def _status(self):
-        """Calculate and return the status of the bot. This method should only
-        be called internally by the controller.
-
-        :return: List of key-value pairs of status indicators
-        :rtype: list of tuples
-
-        """
-        # call _client directly *without* going through api_call
-        try:
-            result = self._client.execute(
-                gql('''query Status {{
-                    person(id: "{id}"{{
-                        id
-                        name
-                    }}
-                }}
-            '''.format(id=self.id)))
-            return [
-                ('API Connection', 'connected'),
-                ('Logged in as', '{} ({})'.format(
-                    result['person']['username'],
-                    result['person']['name'],
-                )),
-                ('Balance',
-                 utils.amount_to_string(result['person']['balance'])),
-            ]
-        except Exception:
-            return [
-                ('API Connection', 'disconnected'),
-            ]
-
     @abstractmethod
     def run(self):
         pass
@@ -202,19 +182,10 @@ class AbstractBasicBot(AbstractBot):
 
     FIRST = 25
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.refresh_node()
-
     def load_gql(func):
         def wrapper(*args, **kwargs):
-            def empty():
-                """Docstring"""
-                pass
 
-            assert func.__code__.co_code == empty.__code__.co_code
-
-            # TODO: add assertions for proper function documentation
+            func(*args, **kwargs)
 
             if func.__name__.split('_')[-1] == 'create':
                 args[0].logger.info('Calling "{}"'.format(func.__name__))
@@ -840,7 +811,12 @@ class AbstractBasicBot(AbstractBot):
         :rtype: :term:`ID`
 
         """
-        pass
+        try:
+            self.refresh_node()
+            assert self.node['balance'] >= kwargs['amount']
+        except Exception as e:
+            self.logger.error(e)
+            raise BotBalanceException
 
     @load_gql
     def comment_create(self, **kwargs):
@@ -954,9 +930,6 @@ class AbstractBasicBot(AbstractBot):
 
         """
         pass
-
-    def refresh_node(self):
-        self.node = self.bot_node(id=self.id)
 
     def comment_chain(self, id):
         """Retrieve the entire chain of comments and root :term:`entry` that

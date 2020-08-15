@@ -8,12 +8,12 @@ import argparse
 from importlib import import_module
 from flask import Flask, request
 from threading import Thread, Event
-from ibots.base import BotStopException, BotNetworkException
+from ibots import base
 
 logger = logging.getLogger('CONTROL')
 
-PERIOD = 4
-RETRY = 16
+PERIOD = 5
+RETRY_NETWORK = 20
 
 
 class Waiter:
@@ -83,13 +83,18 @@ def start(port, level, std, endpoint, config, start_names=[]):
                 bots[name] = bot
                 logger.info('Running bot {}'.format(name))
                 bot.run(**run_args)
-            except BotStopException:
+            except base.BotStopException:
                 logger.info('Stopped bot {}'.format(name))
                 break
-            except BotNetworkException:
-                logger.info('{} lost connection; trying again in {}s'.format(
-                    name, RETRY))
-                time.sleep(RETRY)
+            except base.BotBalanceException:
+                logger.error('{} is broke; exiting'.format(name))
+                break
+            except base.BotNetworkException:
+                logger.warn('{} lost connection; retry in {}s'.format(
+                    name,
+                    RETRY_NETWORK,
+                ))
+                time.sleep(RETRY_NETWORK)
                 continue
 
             logger.error('{} terminated logically; please fix'.format(name))
@@ -122,6 +127,11 @@ def start(port, level, std, endpoint, config, start_names=[]):
     # start server
     app = Flask(__name__)
 
+    for x in threads:
+        threads[x].join()
+    logger.info('All bots terminated')
+    exit()
+
     @app.route('/', methods=['GET', 'POST'])
     def dash():
         return '''
@@ -145,18 +155,18 @@ def start(port, level, std, endpoint, config, start_names=[]):
 </html>
         '''
 
-    @app.route('/status', methods=['POST'])
-    def status():
-        target_set = set(
-            request.form.to_dict(flat=False)['bots'] if request.
-            form['bots'] else config['bots'])
+    # @app.route('/status', methods=['POST'])
+    # def status():
+    #     target_set = set(
+    #         request.form.to_dict(flat=False)['bots'] if request.
+    #         form['bots'] else config['bots'])
 
-        return {
-            x: [
-                ('Status', 'Running'),
-            ] + bots[x]._status()
-            for x in sorted(target_set)
-        }
+    #     return {
+    #         x: [
+    #             ('Status', 'Running'),
+    #         ] + bots[x]._status()
+    #         for x in sorted(target_set)
+    #     }
 
     # @app.route('/start', methods=['POST'])
     # def start():
