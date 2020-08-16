@@ -52,14 +52,14 @@ class AbstractBot(ABC):
         self._stop = False
         self._interact = False
 
-        login_response = requests.post(
-            'https://{}/ibis/login-pass/'.format(self._endpoint),
-            data={
-                'username': username,
-                'password': password
-            })
-
         try:
+            login_response = requests.post(
+                'https://{}/ibis/login-pass/'.format(self._endpoint),
+                data={
+                    'username': username,
+                    'password': password
+                })
+
             self.id = login_response.json()['user_id']
             assert self.id
 
