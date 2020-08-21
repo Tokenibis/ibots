@@ -74,10 +74,13 @@ class AbstractBot(ABC):
         self.refresh_node()
 
     def refresh_node(self):
-        self.node = self.api_call(
-            OPS['__status'],
-            variables={'id': self.id},
-        )['bot']
+        self.node = {
+            utils.snake_case(x): y
+            for x, y in self.api_call(
+                OPS['__status'],
+                variables={'id': self.id},
+            )['bot'].items()
+        }
 
     def api_call(self, operation, variables=None):
         """Execute the gql query and variables on the remote endpoint.
