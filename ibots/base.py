@@ -166,7 +166,7 @@ class AbstractBot(ABC):
                 break
 
             # break if timeout
-            if timeout and utils.localtime() - start < timedelta(
+            if timeout and utils.localtime() - start >= timedelta(
                     seconds=timeout):
                 break
 
