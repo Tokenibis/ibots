@@ -100,9 +100,9 @@ def start(port, level, std, endpoint, config, start_names=[]):
                 ))
                 time.sleep(RETRY_NETWORK)
                 continue
-
-            logger.error('{} terminated logically; please fix'.format(name))
-            break
+            except Exception:
+                logger.exception('{} threw exception'.format(name))
+                break
 
         running[name] = False
 
