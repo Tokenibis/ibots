@@ -48,11 +48,15 @@ def start(port, level, std, endpoint, config, start_names=[]):
         logging.basicConfig(
             stream=sys.stdout,
             level=logging._nameToLevel[level],
+            format='%(asctime)s:%(name)s:%(levelname)s:%(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S',
         )
     else:
         logging.basicConfig(
             filename='ibots.log',
             level=logging._nameToLevel[level],
+            format='%(asctime)s:%(name)s:%(levelname)s:%(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S',
         )
 
     if not start_names:
