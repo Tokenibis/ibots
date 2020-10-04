@@ -4,6 +4,14 @@ from dateutil import parser
 from datetime import datetime
 from pytz import timezone
 
+WEEKDAYS = [
+    'Monday',
+    'Tuesday',
+    'Wednesday',
+    'Thursday',
+    'Friday',
+    'Sunday'
+]
 
 def amount_to_string(x):
     return '${:.2f}'.format(x / 100)
