@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import IPython
 import logging
@@ -1003,10 +1004,27 @@ class AbstractBasicBot(AbstractBot):
         return self.api_call(op, kwargs)
 
     def _list(self, op, **kwargs):
-        if 'first' not in kwargs:
-            kwargs['first'] = self.FIRST
+        assert 'after' not in kwargs
 
-        return self.api_call(op, kwargs)
+        if 'first' not in kwargs:
+            counter = sys.maxsize
+            kwargs['first'] = self.FIRST
+        else:
+            counter = kwargs['first']
+            kwargs['first'] = min(kwargs['first'], self.FIRST)
+
+        result = self.api_call(op, kwargs)
+        page = utils.first_item(result)
+        counter -= len(page['edges'])
+
+        while page['pageInfo']['hasNextPage'] and counter > 0:
+            kwargs['first'] = min(counter, self.FIRST)
+            kwargs['after'] = page['edges'][-1]['cursor']
+            page = utils.first_item(self.api_call(op, kwargs))
+            utils.first_item(result)['edges'].extend(page['edges'])
+            counter -= len(page['edges'])
+
+        return result
 
     def _create(self, op, **kwargs):
         assert 'user' not in kwargs
