@@ -10,6 +10,7 @@ WEEKDAYS = [
     'Wednesday',
     'Thursday',
     'Friday',
+    'Saturday',
     'Sunday'
 ]
 
