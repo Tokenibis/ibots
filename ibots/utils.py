@@ -11,8 +11,9 @@ WEEKDAYS = [
     'Thursday',
     'Friday',
     'Saturday',
-    'Sunday'
+    'Sunday',
 ]
+
 
 def amount_to_string(x):
     return '${:.2f}'.format(x / 100)
