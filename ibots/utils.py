@@ -1,7 +1,7 @@
 import re
 
 from dateutil import parser
-from datetime import datetime
+from datetime import datetime, timedelta
 from pytz import timezone
 
 WEEKDAYS = [
@@ -38,3 +38,14 @@ def localtime(initial=None):
     elif type(initial) == datetime:
         return datetime.astimezone(timezone('America/Denver'))
     return datetime.now(timezone('America/Denver'))
+
+
+def epoch_start(weekday, time, offset=0):
+    return (time - timedelta(
+        days=(
+            (time.weekday() - WEEKDAYS.index(weekday)) %
+            len(WEEKDAYS)) - offset * len(WEEKDAYS))).replace(
+                hour=0,
+                second=0,
+                microsecond=0,
+            )
