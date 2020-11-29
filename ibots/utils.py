@@ -36,7 +36,7 @@ def localtime(initial=None):
     if type(initial) == str:
         return parser.parse(initial).astimezone(timezone('America/Denver'))
     elif type(initial) == datetime:
-        return datetime.astimezone(timezone('America/Denver'))
+        return initial.astimezone(timezone('America/Denver'))
     return datetime.now(timezone('America/Denver'))
 
 
