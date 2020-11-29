@@ -41,11 +41,16 @@ def localtime(initial=None):
 
 
 def epoch_start(weekday, time, offset=0):
-    return (time - timedelta(
-        days=(
-            (time.weekday() - WEEKDAYS.index(weekday)) %
-            len(WEEKDAYS)) - offset * len(WEEKDAYS))).replace(
-                hour=0,
-                second=0,
-                microsecond=0,
-            )
+    raw = localtime((time - timedelta(
+        days=((time.weekday() - WEEKDAYS.index(weekday)) % len(WEEKDAYS)) -
+        offset * len(WEEKDAYS))).replace(
+            hour=0,
+            second=0,
+            microsecond=0,
+        ))
+
+    return datetime.combine(
+        (raw + timedelta(hours=12)).date(),
+        datetime.min.time(),
+        tzinfo=raw.tzinfo,
+    )
