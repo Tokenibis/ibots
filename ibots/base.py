@@ -83,7 +83,7 @@ class AbstractBot(ABC):
             )['bot'].items()
         }
 
-    def api_call(self, operation, variables=None):
+    def api_call(self, operation, variables={}):
         """Execute the gql query and variables on the remote endpoint.
 
         :param operation: GraphQL query to execute
@@ -210,6 +210,27 @@ class AbstractBasicBot(AbstractBot):
             return result
 
         return wrapper
+
+    def register_custom_gql(self, op_name, op_type, op_body):
+        if not hasattr(self, 'custom_ops'):
+            self.custom_ops = {}
+
+        assert op_type in ['node', 'list', 'create', 'update']
+        self.custom_ops[op_name] = {'type': op_type, 'body': op_body}
+
+    def call_custom_gql(self, op_name, **kwargs):
+        self.logger.debug('Calling "{}"'.format(op_name))
+
+        result = AbstractBasicBot._collapse_connections(
+            getattr(
+                AbstractBasicBot,
+                '_' + self.custom_ops[op_name]['type'],
+            )(self, self.custom_ops[op_name]['body'], **kwargs))
+
+        self.logger.debug('Result: {}'.format(
+            json.dumps(result, indent=2)))
+
+        return result
 
     @load_gql
     def organizaton_list(self, **kwargs):
