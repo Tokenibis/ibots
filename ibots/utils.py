@@ -54,3 +54,17 @@ def epoch_start(weekday, time, offset=0):
         datetime.min.time(),
         tzinfo=raw.tzinfo,
     )
+
+
+def day_start(time, offset=0):
+    raw = localtime((time + timedelta(days=offset)).replace(
+        hour=0,
+        second=0,
+        microsecond=0,
+    ))
+
+    return datetime.combine(
+        (raw + timedelta(hours=12)).date(),
+        datetime.min.time(),
+        tzinfo=raw.tzinfo,
+    )
